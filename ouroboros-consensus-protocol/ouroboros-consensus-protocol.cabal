@@ -84,10 +84,13 @@ library unstable-protocol-testlib
   import: common-lib
   visibility: public
   hs-source-dirs: src/unstable-protocol-testlib
-  exposed-modules: Test.Consensus.Protocol.Serialisation.Generators
+  exposed-modules:
+    Test.Consensus.Protocol.Serialisation.Generators
+    Test.Ouroboros.Consensus.Protocol.Praos.Header
   build-depends:
     QuickCheck,
     base,
+    bytestring,
     cardano-crypto-class,
     cardano-crypto-tests,
     cardano-ledger-shelley-test,
