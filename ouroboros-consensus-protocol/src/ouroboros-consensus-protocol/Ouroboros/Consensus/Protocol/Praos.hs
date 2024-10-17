@@ -591,7 +591,7 @@ validateKESSignature
                 PraosParams{praosMaxKESEvo, praosSlotsPerKESPeriod}
                 _ei
             )
-    Views.LedgerView{Views.lvPoolDistr}
+    Views.LedgerView{Views.lvPoolDistr = SL.PoolDistr lvPoolDistr _totalActiveStake}
     ocertCounters =
         doValidateKESSignature praosMaxKESEvo praosSlotsPerKESPeriod lvPoolDistr ocertCounters
 
@@ -601,11 +601,11 @@ doValidateKESSignature ::
     (PraosCrypto c) =>
     Word64 ->
     Word64 ->
-    SL.PoolDistr c ->
+    Map (KeyHash SL.StakePool c) (IndividualPoolStake c) ->
     Map (KeyHash BlockIssuer c) Word64 ->
     Views.HeaderView c ->
     Except (PraosValidationErr c) ()
-doValidateKESSignature praosMaxKESEvo praosSlotsPerKESPeriod lvPoolDistr ocertCounters b =
+doValidateKESSignature praosMaxKESEvo praosSlotsPerKESPeriod stakeDistribution ocertCounters b =
     do
         c0 <= kp ?! KESBeforeStartOCERT c0 kp
         kp_ < c0_ + fromIntegral praosMaxKESEvo ?! KESAfterEndOCERT kp c0 praosMaxKESEvo
@@ -638,7 +638,7 @@ doValidateKESSignature praosMaxKESEvo praosSlotsPerKESPeriod lvPoolDistr ocertCo
     currentIssueNo :: Maybe Word64
     currentIssueNo
         | Map.member hk ocertCounters = Map.lookup hk ocertCounters
-        | Set.member (coerceKeyRole hk) (Map.keysSet $ SL.unPoolDistr lvPoolDistr) =
+        | Set.member (coerceKeyRole hk) (Map.keysSet stakeDistribution) =
             Just 0
         | otherwise = Nothing
 
