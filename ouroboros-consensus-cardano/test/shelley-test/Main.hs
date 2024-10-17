@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified Test.Consensus.Shelley.Coherence (tests)
 import qualified Test.Consensus.Shelley.Golden (tests)
+import qualified Test.Consensus.Shelley.HeaderValidation
 import qualified Test.Consensus.Shelley.Serialisation (tests)
 import qualified Test.Consensus.Shelley.SupportedNetworkProtocolVersion (tests)
 import           Test.Tasty
@@ -14,10 +15,12 @@ main = defaultMainWithTestEnv defaultTestEnvConfig tests
 
 tests :: TestTree
 tests =
-  testGroup "shelley"
-  [ Test.Consensus.Shelley.Coherence.tests
-  , Test.Consensus.Shelley.Golden.tests
-  , Test.Consensus.Shelley.Serialisation.tests
-  , Test.Consensus.Shelley.SupportedNetworkProtocolVersion.tests
-  , Test.ThreadNet.Shelley.tests
-  ]
+    testGroup
+        "shelley"
+        [ Test.Consensus.Shelley.Coherence.tests
+        , Test.Consensus.Shelley.Golden.tests
+        , Test.Consensus.Shelley.HeaderValidation.tests
+        , Test.Consensus.Shelley.Serialisation.tests
+        , Test.Consensus.Shelley.SupportedNetworkProtocolVersion.tests
+        , Test.ThreadNet.Shelley.tests
+        ]
