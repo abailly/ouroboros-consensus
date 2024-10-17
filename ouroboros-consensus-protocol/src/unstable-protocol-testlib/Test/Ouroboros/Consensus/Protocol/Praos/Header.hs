@@ -5,33 +5,47 @@
 
 module Test.Ouroboros.Consensus.Protocol.Praos.Header (genHeader) where
 
-import           Cardano.Crypto.DSIGN
-                     (DSIGNAlgorithm (SignKeyDSIGN, genKeyDSIGN), Ed25519DSIGN,
-                     deriveVerKeyDSIGN)
-import           Cardano.Crypto.Hash (Blake2b_256, Hash, hash)
+import Cardano.Crypto.DSIGN (
+    DSIGNAlgorithm (SignKeyDSIGN, genKeyDSIGN),
+    Ed25519DSIGN,
+    deriveVerKeyDSIGN,
+ )
+import Cardano.Crypto.Hash (Blake2b_256, Hash, hash)
 import qualified Cardano.Crypto.KES as KES
-import           Cardano.Crypto.KES.Class (genKeyKES)
-import           Cardano.Crypto.Seed (mkSeedFromBytes)
+import Cardano.Crypto.KES.Class (genKeyKES)
+import Cardano.Crypto.Seed (mkSeedFromBytes)
 import qualified Cardano.Crypto.VRF as VRF
 import qualified Cardano.Crypto.VRF.Praos as VRF
-import           Cardano.Ledger.BaseTypes (Nonce (..), ProtVer (..), Version,
-                     natVersion)
-import           Cardano.Ledger.Keys (VKey (..), signedDSIGN)
-import           Cardano.Protocol.TPraos.BHeader (HashHeader (..),
-                     PrevHash (..))
-import           Cardano.Protocol.TPraos.OCert (KESPeriod (..), OCert (..),
-                     OCertSignable (..))
-import           Cardano.Slotting.Block (BlockNo (..))
-import           Cardano.Slotting.Slot (SlotNo (..))
-import           Data.ByteString (ByteString)
+import Cardano.Ledger.BaseTypes (
+    Nonce (..),
+    ProtVer (..),
+    Version,
+    natVersion,
+ )
+import Cardano.Ledger.Keys (VKey (..), signedDSIGN)
+import Cardano.Protocol.TPraos.BHeader (
+    HashHeader (..),
+    PrevHash (..),
+ )
+import Cardano.Protocol.TPraos.OCert (
+    KESPeriod (..),
+    OCert (..),
+    OCertSignable (..),
+ )
+import Cardano.Slotting.Block (BlockNo (..))
+import Cardano.Slotting.Slot (SlotNo (..))
+import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
-import           Data.Coerce (coerce)
-import           Data.Word (Word64)
-import           Ouroboros.Consensus.Protocol.Praos.Header (Header,
-                     HeaderBody (..), pattern Header)
-import           Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF)
-import           Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
-import           Test.QuickCheck (Gen, arbitrary, choose, getPositive, vectorOf)
+import Data.Coerce (coerce)
+import Data.Word (Word64)
+import Ouroboros.Consensus.Protocol.Praos.Header (
+    Header,
+    HeaderBody (..),
+    pattern Header,
+ )
+import Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF)
+import Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
+import Test.QuickCheck (Gen, arbitrary, choose, getPositive, vectorOf)
 
 type KESKey = KES.SignKeyKES (KES.Sum6KES Ed25519DSIGN Blake2b_256)
 

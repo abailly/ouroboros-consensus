@@ -364,6 +364,7 @@ test-suite shelley-test
     tasty,
     tasty-hunit,
     tasty-quickcheck,
+    text,
     unstable-shelley-testlib,
 
 library unstable-cardano-testlib
