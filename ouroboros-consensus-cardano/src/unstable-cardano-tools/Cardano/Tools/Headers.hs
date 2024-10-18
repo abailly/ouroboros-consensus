@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -35,6 +36,7 @@ import Ouroboros.Consensus.Shelley.Ledger (
     mkShelleyHeader,
  )
 
+import Cardano.Prelude (ExitCode (..), exitWith, forM_, hPutStrLn, stderr)
 import Ouroboros.Consensus.Shelley.Protocol.Praos ()
 import Test.Ouroboros.Consensus.Protocol.Praos.Header (
     GeneratorContext (..),
@@ -50,14 +52,23 @@ import Test.Ouroboros.Consensus.Protocol.Praos.Header (
 type ConwayBlock = ShelleyBlock (Praos StandardCrypto) (ConwayEra StandardCrypto)
 
 -- * Running Generator
-data Options = Options
+data Options
+    = Generate
+    | Validate
 
 run :: Options -> IO ()
-run Options = do
-    sample <- generateSamples
-    LBS.putStr $ Json.encode sample <> "\n"
+run = \case
+    Generate -> do
+        sample <- generateSamples
+        LBS.putStr $ Json.encode sample <> "\n"
+    Validate ->
+        Json.eitherDecode <$> LBS.getContents >>= \case
+            Left err -> hPutStrLn stderr err >> exitWith (ExitFailure 1)
+            Right Sample{context, headers} ->
+                forM_ headers $ \mutatedHeader -> do
+                    print $ validate context mutatedHeader
 
-data ValidationResult = Valid Mutation | Invalid Mutation String
+data ValidationResult = Valid !Mutation | Invalid !Mutation !String
     deriving (Eq, Show)
 
 validate :: GeneratorContext -> MutatedHeader -> ValidationResult
