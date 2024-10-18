@@ -3,12 +3,9 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
-module Test.Ouroboros.Consensus.Protocol.Praos.Header (
-    genContext,
-    GeneratorContext (..),
-    genHeader,
-) where
+module Test.Ouroboros.Consensus.Protocol.Praos.Header where
 
 import Cardano.Crypto.DSIGN (
     DSIGNAlgorithm (SignKeyDSIGN, genKeyDSIGN),
@@ -53,6 +50,14 @@ import Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF)
 import Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
 import Test.QuickCheck (Gen, arbitrary, choose, getPositive, vectorOf)
 
+-- * Running Generator
+data Options = Options
+
+run :: Options -> IO ()
+run Options =
+    pure ()
+
+-- * Generators
 type KESKey = KES.SignKeyKES (KES.Sum6KES Ed25519DSIGN Blake2b_256)
 
 newVRFSigningKey :: ByteString -> (VRF.SignKeyVRF VRF.PraosVRF, VRF.VerKeyVRF VRF.PraosVRF)
@@ -62,11 +67,11 @@ newKESSigningKey :: ByteString -> KESKey
 newKESSigningKey = genKeyKES . mkSeedFromBytes
 
 data GeneratorContext = GeneratorContext
-    { praosSlotsPerKESPeriod :: Word64
-    , kesSignKey :: KESKey
-    , coldSignKey :: SignKeyDSIGN Ed25519DSIGN
-    , vrfSignKey :: VRF.SignKeyVRF VRF.PraosVRF
-    , nonce :: Nonce
+    { praosSlotsPerKESPeriod :: !Word64
+    , kesSignKey :: !KESKey
+    , coldSignKey :: !(SignKeyDSIGN Ed25519DSIGN)
+    , vrfSignKey :: !(VRF.SignKeyVRF VRF.PraosVRF)
+    , nonce :: !Nonce
     }
     deriving (Show)
 

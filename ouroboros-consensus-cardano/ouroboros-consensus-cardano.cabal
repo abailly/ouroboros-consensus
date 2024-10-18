@@ -670,3 +670,16 @@ test-suite tools-test
     tasty,
     tasty-hunit,
     unstable-cardano-tools,
+
+executable gen-header
+  import: common-exe
+  hs-source-dirs: app
+  main-is: gen-header.hs
+  build-depends:
+    base,
+    cardano-crypto-class,
+    optparse-applicative,
+    ouroboros-consensus-protocol:{ouroboros-consensus-protocol, unstable-protocol-testlib},
+    with-utf8,
+  other-modules:
+    Paths_ouroboros_consensus_cardano
