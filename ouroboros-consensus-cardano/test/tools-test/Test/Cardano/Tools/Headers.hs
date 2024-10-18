@@ -1,6 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
-
 module Test.Cardano.Tools.Headers (tests) where
 
 import Cardano.Tools.Headers (ValidationResult (..), validate)
@@ -47,8 +44,22 @@ prop_roundtrip_json_samples =
 
 prop_validate_legit_header :: Property
 prop_validate_legit_header =
-    forAll genContext $ \context ->
-        forAll (genMutatedHeader context) $ \header ->
-            case validate context header of
-                Valid mut -> property True & label (show mut)
-                Invalid mut err -> property False & counterexample ("Expected: " <> show mut <> "\nError: " <> err)
+    forAllBlind genContext $ \context ->
+        forAllBlind (genMutatedHeader context) $ \header ->
+            annotate context header $
+                case validate context header of
+                    Valid mut -> property True & label (show mut)
+                    Invalid mut err -> property False & counterexample ("Expected: " <> show mut <> "\nError: " <> err)
+  where
+    annotate context header =
+        counterexample
+            ( unlines $
+                [ "context:"
+                , asJson context
+                , "header:"
+                , asJson header
+                ]
+            )
+
+    asJson :: (Json.ToJSON a) => a -> String
+    asJson = LT.unpack . decodeUtf8 . Json.encode

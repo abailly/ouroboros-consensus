@@ -109,39 +109,50 @@ shrinkSample Sample{context, headers} =
 mutate :: GeneratorContext -> Header StandardCrypto -> Mutation -> Gen (Header StandardCrypto)
 mutate context header = \case
     NoMutation -> pure header
-    InvalidKESSignature -> do
+    MutateKESKey -> do
         let Header body _ = header
-        kesSignKey <- newKESSigningKey <$> gen32Bytes
+        newKESSignKey <- newKESSigningKey <$> gen32Bytes
         KESPeriod kesPeriod <- genValidKESPeriod (hbSlotNo body) praosSlotsPerKESPeriod
-        let sig' = KES.signKES () kesPeriod body kesSignKey
+        let sig' = KES.signKES () kesPeriod body newKESSignKey
         pure $ Header body (KES.SignedKES sig')
+    MutateColdKey -> do
+        let Header body _ = header
+        newColdSignKey <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
+        (hbOCert, KESPeriod kesPeriod) <- genCert (hbSlotNo body) context{coldSignKey = newColdSignKey}
+        let newBody = body{hbOCert}
+        let sig' = KES.signKES () kesPeriod newBody kesSignKey
+        pure $ Header newBody (KES.SignedKES sig')
   where
-    GeneratorContext{praosSlotsPerKESPeriod} = context
+    GeneratorContext{praosSlotsPerKESPeriod, kesSignKey} = context
 
-data Mutation = NoMutation | InvalidKESSignature
+data Mutation = NoMutation | MutateKESKey | MutateColdKey
     deriving (Eq, Show)
 
 instance Json.ToJSON Mutation where
     toJSON = \case
         NoMutation -> "NoMutation"
-        InvalidKESSignature -> "InvalidKESSignature"
+        MutateKESKey -> "MutateKESKey"
+        MutateColdKey -> "MutateColdKey"
 
 instance Json.FromJSON Mutation where
     parseJSON = \case
         "NoMutation" -> pure NoMutation
-        "InvalidKESSignature" -> pure InvalidKESSignature
+        "MutateKESKey" -> pure MutateKESKey
+        "MutateColdKey" -> pure MutateColdKey
         _ -> fail "Invalid mutation"
 
 expectedError :: Mutation -> String
 expectedError = \case
     NoMutation -> "No error"
-    InvalidKESSignature -> "InvalidKesSignatureOCERT"
+    MutateKESKey -> "InvalidKesSignatureOCERT"
+    MutateColdKey -> "InvalidSignatureOCERT"
 
 genMutation :: Gen Mutation
 genMutation =
     frequency
-        [ (1, pure NoMutation)
-        , (1, pure InvalidKESSignature)
+        [ (2, pure NoMutation)
+        , (1, pure MutateKESKey)
+        , (1, pure MutateColdKey)
         ]
 
 data MutatedHeader = MutatedHeader
