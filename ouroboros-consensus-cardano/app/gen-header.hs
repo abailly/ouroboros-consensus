@@ -20,7 +20,7 @@ argsParser =
         (optionsParser <**> helper)
         ( progDesc $
             unlines
-                [ "gen-header - A utility to generate valid and invalid Cardano headers for testing purpose"
+                [ "gen-header - A utility to generate valid and invalid Praos headers for testing purpose"
                 , "version: " <> showVersion version
                 ]
         )

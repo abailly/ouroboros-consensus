@@ -1,6 +1,9 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
@@ -25,6 +28,8 @@ import Cardano.Ledger.BaseTypes (
     Version,
     natVersion,
  )
+import Cardano.Ledger.Binary (MaxVersion, decCBOR, decodeFull', decodeFullAnnotator, serialize')
+import Cardano.Ledger.Crypto (Crypto)
 import Cardano.Ledger.Keys (VKey (..), signedDSIGN)
 import Cardano.Protocol.TPraos.BHeader (
     HashHeader (..),
@@ -37,9 +42,14 @@ import Cardano.Protocol.TPraos.OCert (
  )
 import Cardano.Slotting.Block (BlockNo (..))
 import Cardano.Slotting.Slot (SlotNo (..))
+import Data.Aeson ((.:), (.=))
+import qualified Data.Aeson as Json
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Lazy as LBS
 import Data.Coerce (coerce)
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Word (Word64)
 import Ouroboros.Consensus.Protocol.Praos.Header (
     Header,
@@ -48,14 +58,53 @@ import Ouroboros.Consensus.Protocol.Praos.Header (
  )
 import Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF)
 import Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
-import Test.QuickCheck (Gen, arbitrary, choose, getPositive, vectorOf)
+import Test.QuickCheck (Gen, arbitrary, choose, generate, getPositive, sized, vectorOf)
 
 -- * Running Generator
 data Options = Options
 
 run :: Options -> IO ()
-run Options =
-    pure ()
+run Options = do
+    sample <- generate genSample
+    LBS.putStr $ Json.encode sample <> "\n"
+
+-- * Test Vectors
+
+-- FIXME: Should be defined according to some Era
+testVersion :: Version
+testVersion = natVersion @MaxVersion
+
+data Sample = Sample
+    { context :: GeneratorContext
+    , headers :: [Header StandardCrypto]
+    }
+    deriving (Show, Eq)
+
+instance Json.ToJSON Sample where
+    toJSON Sample{context, headers} =
+        Json.object
+            [ "context" .= context
+            , "headers" .= cborHeaders
+            ]
+      where
+        cborHeaders = map (decodeUtf8 . Base64.encode . serialize' testVersion) headers
+
+instance Json.FromJSON Sample where
+    parseJSON = Json.withObject "Sample" $ \obj -> do
+        context <- obj .: "context"
+        cborHeaders <- obj .: "headers"
+        headers <- traverse parseHeader cborHeaders
+        pure Sample{..}
+      where
+        parseHeader cborHeader = do
+            let headerBytes = Base64.decodeLenient (encodeUtf8 cborHeader)
+            either (fail . show) pure $ decodeFullAnnotator @(Header StandardCrypto) testVersion "Header" decCBOR $ LBS.fromStrict headerBytes
+
+genSample :: Gen Sample
+genSample = do
+    context <- genContext
+    headers <- sized $ \n -> vectorOf n $ genHeader context
+    pure $ Sample{..}
 
 -- * Generators
 type KESKey = KES.SignKeyKES (KES.Sum6KES Ed25519DSIGN Blake2b_256)
@@ -74,6 +123,46 @@ data GeneratorContext = GeneratorContext
     , nonce :: !Nonce
     }
     deriving (Show)
+
+instance Eq GeneratorContext where
+    a == b =
+        praosSlotsPerKESPeriod a == praosSlotsPerKESPeriod b
+            && serialize' testVersion (kesSignKey a) == serialize' testVersion (kesSignKey b)
+            && coldSignKey a == coldSignKey b
+            && vrfSignKey a == vrfSignKey b
+            && nonce a == nonce b
+
+instance Json.ToJSON GeneratorContext where
+    toJSON GeneratorContext{..} =
+        Json.object
+            [ "praosSlotsPerKESPeriod" .= praosSlotsPerKESPeriod
+            , "kesSignKey" .= cborKesSignKey
+            , "coldSignKey" .= cborColdSignKey
+            , "vrfSignKey" .= cborVrfSignKey
+            , "nonce" .= cborNonce
+            ]
+      where
+        cborKesSignKey = decodeUtf8 . Base64.encode $ serialize' testVersion kesSignKey
+        cborColdSignKey = decodeUtf8 . Base64.encode $ serialize' testVersion coldSignKey
+        cborVrfSignKey = decodeUtf8 . Base64.encode $ serialize' testVersion vrfSignKey
+        cborNonce = decodeUtf8 . Base64.encode $ serialize' testVersion nonce
+
+instance Json.FromJSON GeneratorContext where
+    parseJSON = Json.withObject "GeneratorContext" $ \obj -> do
+        praosSlotsPerKESPeriod <- obj .: "praosSlotsPerKESPeriod"
+        cborKesSignKey <- obj .: "kesSignKey"
+        cborColdSignKey <- obj .: "coldSignKey"
+        cborVrfSignKey <- obj .: "vrfSignKey"
+        cborNonce <- obj .: "nonce"
+        kesSignKey <- parseKey cborKesSignKey
+        coldSignKey <- parseKey cborColdSignKey
+        vrfSignKey <- parseKey cborVrfSignKey
+        nonce <- parseKey cborNonce
+        pure GeneratorContext{..}
+      where
+        parseKey cborKey = do
+            let keyBytes = Base64.decodeLenient (encodeUtf8 cborKey)
+            either (fail . show) pure $ decodeFull' testVersion keyBytes
 
 genContext :: Gen GeneratorContext
 genContext = do

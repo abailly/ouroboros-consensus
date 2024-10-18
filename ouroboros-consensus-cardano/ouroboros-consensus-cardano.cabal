@@ -339,6 +339,7 @@ test-suite shelley-test
 
   build-depends:
     QuickCheck,
+    aeson,
     base,
     bytestring,
     cardano-crypto-class,

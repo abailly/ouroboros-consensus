@@ -15,6 +15,7 @@ import Cardano.Ledger.Keys (VKey (..), hashKey)
 import Cardano.Ledger.PoolDistr (IndividualPoolStake (..), PoolDistr (..))
 import Cardano.Protocol.TPraos.OCert (ocertN)
 import Control.Monad.Except (runExcept)
+import qualified Data.Aeson as Json
 import Data.Char (isSpace)
 import Data.Either (isLeft)
 import Data.Function ((&))
@@ -39,7 +40,7 @@ import Ouroboros.Consensus.Shelley.Protocol.Abstract (
     protocolHeaderView,
  )
 import Ouroboros.Consensus.Shelley.Protocol.Praos ()
-import Test.Ouroboros.Consensus.Protocol.Praos.Header (GeneratorContext (..), genContext, genHeader)
+import Test.Ouroboros.Consensus.Protocol.Praos.Header (GeneratorContext (..), genContext, genHeader, genSample)
 import Test.QuickCheck (Property, choose, forAll, label, (===))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.QuickCheck (testProperty)
@@ -48,9 +49,17 @@ tests :: TestTree
 tests =
     testGroup
         "HeaderValidation"
-        [ testProperty "validate legit header" prop_validate_legit_header
+        [ testProperty "roundtrip To/FromJSON samples" prop_roundtrip_json_samples
+        , testProperty "validate legit header" prop_validate_legit_header
         , testProperty "reject incorrect header" prop_reject_incorrect_header
         ]
+
+prop_roundtrip_json_samples :: Property
+prop_roundtrip_json_samples =
+    forAll genSample $ \sample ->
+        let encoded = Json.encode sample
+            decoded = Json.eitherDecode encoded
+         in decoded === Right sample
 
 coin = fromJust . toCompact . Coin
 
