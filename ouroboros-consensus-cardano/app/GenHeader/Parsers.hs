@@ -22,8 +22,8 @@ argsParser =
 optionsParser :: Parser Options
 optionsParser =
     hsubparser
-        ( command "generate" (info generateOptionsParser (progDesc "Generate Praos headers context and valid/invalid headers"))
-            <> command "validate" (info validateOptionsParser (progDesc "Validate a sample of Praos headers within a context"))
+        ( command "generate" (info generateOptionsParser (progDesc "Generate Praos headers context and valid/invalid headers. Writes JSON formatted context to stdout and headers to stdout."))
+            <> command "validate" (info validateOptionsParser (progDesc "Validate a sample of Praos headers within a context. Reads JSON formatted sample from stdin."))
         )
 
 validateOptionsParser :: Parser Options

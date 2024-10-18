@@ -57,7 +57,7 @@ import Ouroboros.Consensus.Protocol.Praos.Header (
  )
 import Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF)
 import Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
-import Test.QuickCheck (Gen, arbitrary, choose, frequency, generate, getPositive, shrinkList, sized, vectorOf)
+import Test.QuickCheck (Gen, arbitrary, choose, frequency, generate, getPositive, shrinkList, sized, suchThat, vectorOf)
 
 -- * Test Vectors
 
@@ -122,10 +122,34 @@ mutate context header = \case
         let newBody = body{hbOCert}
         let sig' = KES.signKES () kesPeriod newBody kesSignKey
         pure $ Header newBody (KES.SignedKES sig')
+    MutateKESPeriod -> do
+        let Header body _ = header
+        KESPeriod kesPeriod' <- genKESPeriodAfterLimit (hbSlotNo body) praosSlotsPerKESPeriod
+        let newKESPeriod = KESPeriod kesPeriod'
+        let oldOCert@OCert{ocertVkHot, ocertN} = hbOCert body
+        let newBody =
+                body
+                    { hbOCert =
+                        oldOCert
+                            { ocertKESPeriod = newKESPeriod
+                            , ocertSigma = signedDSIGN @StandardCrypto coldSignKey (OCertSignable ocertVkHot ocertN newKESPeriod)
+                            }
+                    }
+        let sig' = KES.signKES () kesPeriod' newBody kesSignKey
+        pure $ Header newBody (KES.SignedKES sig')
   where
-    GeneratorContext{praosSlotsPerKESPeriod, kesSignKey} = context
+    GeneratorContext{praosSlotsPerKESPeriod, kesSignKey, coldSignKey} = context
 
-data Mutation = NoMutation | MutateKESKey | MutateColdKey
+data Mutation
+    = -- | No mutation
+      NoMutation
+    | -- | Mutate the KES key, ie. sign the header with a different KES key.
+      MutateKESKey
+    | -- | Mutate the cold key, ie. sign the operational certificate with a different cold key.
+      MutateColdKey
+    | -- | Mutate the KES period in the operational certificate to be
+      -- before the start of the KES period.
+      MutateKESPeriod
     deriving (Eq, Show)
 
 instance Json.ToJSON Mutation where
@@ -133,12 +157,14 @@ instance Json.ToJSON Mutation where
         NoMutation -> "NoMutation"
         MutateKESKey -> "MutateKESKey"
         MutateColdKey -> "MutateColdKey"
+        MutateKESPeriod -> "MutateKESPeriod"
 
 instance Json.FromJSON Mutation where
     parseJSON = \case
         "NoMutation" -> pure NoMutation
         "MutateKESKey" -> pure MutateKESKey
         "MutateColdKey" -> pure MutateColdKey
+        "MutateKESPeriod" -> pure MutateKESPeriod
         _ -> fail "Invalid mutation"
 
 expectedError :: Mutation -> String
@@ -146,13 +172,15 @@ expectedError = \case
     NoMutation -> "No error"
     MutateKESKey -> "InvalidKesSignatureOCERT"
     MutateColdKey -> "InvalidSignatureOCERT"
+    MutateKESPeriod -> "KESBeforeStartOCERT"
 
 genMutation :: Gen Mutation
 genMutation =
     frequency
-        [ (2, pure NoMutation)
+        [ (3, pure NoMutation)
         , (1, pure MutateKESKey)
         , (1, pure MutateColdKey)
+        , (1, pure MutateKESPeriod)
         ]
 
 data MutatedHeader = MutatedHeader
@@ -298,6 +326,12 @@ genCert slotNo context = do
 genValidKESPeriod :: SlotNo -> Word64 -> Gen KESPeriod
 genValidKESPeriod slotNo praosSlotsPerKESPeriod =
     pure $ KESPeriod $ fromIntegral $ unSlotNo slotNo `div` praosSlotsPerKESPeriod
+
+genKESPeriodAfterLimit :: SlotNo -> Word64 -> Gen KESPeriod
+genKESPeriodAfterLimit slotNo praosSlotsPerKESPeriod =
+    KESPeriod . fromIntegral <$> arbitrary `suchThat` (> currentKESPeriod)
+  where
+    currentKESPeriod = unSlotNo slotNo `div` praosSlotsPerKESPeriod
 
 genHash :: Gen (Hash Blake2b_256 a)
 genHash = coerce . hash <$> gen32Bytes
