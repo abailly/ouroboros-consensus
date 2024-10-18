@@ -1,9 +1,9 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ImpredicativeTypes #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
@@ -29,7 +29,6 @@ import Cardano.Ledger.BaseTypes (
     natVersion,
  )
 import Cardano.Ledger.Binary (MaxVersion, decCBOR, decodeFull', decodeFullAnnotator, serialize')
-import Cardano.Ledger.Crypto (Crypto)
 import Cardano.Ledger.Keys (VKey (..), signedDSIGN)
 import Cardano.Protocol.TPraos.BHeader (
     HashHeader (..),
@@ -60,23 +59,18 @@ import Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF)
 import Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
 import Test.QuickCheck (Gen, arbitrary, choose, generate, getPositive, sized, vectorOf)
 
--- * Running Generator
-data Options = Options
-
-run :: Options -> IO ()
-run Options = do
-    sample <- generate genSample
-    LBS.putStr $ Json.encode sample <> "\n"
-
 -- * Test Vectors
+
+generateSamples :: IO Sample
+generateSamples = generate genSample
 
 -- FIXME: Should be defined according to some Era
 testVersion :: Version
 testVersion = natVersion @MaxVersion
 
 data Sample = Sample
-    { context :: GeneratorContext
-    , headers :: [Header StandardCrypto]
+    { context :: !GeneratorContext
+    , headers :: ![Header StandardCrypto]
     }
     deriving (Show, Eq)
 
@@ -103,8 +97,22 @@ instance Json.FromJSON Sample where
 genSample :: Gen Sample
 genSample = do
     context <- genContext
-    headers <- sized $ \n -> vectorOf n $ genHeader context
+    headers <- sized $ \n -> vectorOf n $ do
+        mutation <- genMutation
+        header <- genHeader context
+        mutated <- mutate header mutation
+        pure mutated
     pure $ Sample{..}
+
+mutate :: Header StandardCrypto -> Mutation -> Gen (Header StandardCrypto)
+mutate header = \case
+    NoMutation -> pure header
+
+data Mutation = NoMutation
+    deriving (Eq, Show)
+
+genMutation :: Gen Mutation
+genMutation = pure NoMutation
 
 -- * Generators
 type KESKey = KES.SignKeyKES (KES.Sum6KES Ed25519DSIGN Blake2b_256)

@@ -101,8 +101,6 @@ library unstable-protocol-testlib
     cardano-ledger-shelley-test,
     cardano-protocol-tpraos,
     cardano-slotting,
-    cardano-binary,
-    cborg,
     ouroboros-consensus-protocol,
     text
 
@@ -122,6 +120,7 @@ test-suite protocol-test
     cardano-ledger-core,
     containers,
     ouroboros-consensus:{ouroboros-consensus, unstable-consensus-testlib},
+    ouroboros-consensus-protocol,
     serialise,
     tasty,
     tasty-quickcheck,
