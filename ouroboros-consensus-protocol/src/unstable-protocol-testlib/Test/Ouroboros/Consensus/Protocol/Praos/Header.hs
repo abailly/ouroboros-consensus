@@ -57,7 +57,7 @@ import Ouroboros.Consensus.Protocol.Praos.Header (
  )
 import Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF)
 import Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
-import Test.QuickCheck (Gen, arbitrary, choose, generate, getPositive, sized, vectorOf)
+import Test.QuickCheck (Gen, arbitrary, choose, frequency, generate, getPositive, shrinkList, sized, vectorOf)
 
 -- * Test Vectors
 
@@ -70,7 +70,7 @@ testVersion = natVersion @MaxVersion
 
 data Sample = Sample
     { context :: !GeneratorContext
-    , headers :: ![Header StandardCrypto]
+    , headers :: ![MutatedHeader]
     }
     deriving (Show, Eq)
 
@@ -78,21 +78,14 @@ instance Json.ToJSON Sample where
     toJSON Sample{context, headers} =
         Json.object
             [ "context" .= context
-            , "headers" .= cborHeaders
+            , "headers" .= headers
             ]
-      where
-        cborHeaders = map (decodeUtf8 . Base64.encode . serialize' testVersion) headers
 
 instance Json.FromJSON Sample where
     parseJSON = Json.withObject "Sample" $ \obj -> do
         context <- obj .: "context"
-        cborHeaders <- obj .: "headers"
-        headers <- traverse parseHeader cborHeaders
+        headers <- obj .: "headers"
         pure Sample{..}
-      where
-        parseHeader cborHeader = do
-            let headerBytes = Base64.decodeLenient (encodeUtf8 cborHeader)
-            either (fail . show) pure $ decodeFullAnnotator @(Header StandardCrypto) testVersion "Header" decCBOR $ LBS.fromStrict headerBytes
 
 genSample :: Gen Sample
 genSample = do
@@ -100,19 +93,79 @@ genSample = do
     headers <- sized $ \n -> vectorOf n $ do
         mutation <- genMutation
         header <- genHeader context
-        mutated <- mutate header mutation
-        pure mutated
-    pure $ Sample{..}
+        mutated <- mutate context header mutation
+        pure $ MutatedHeader{header = mutated, mutation}
+    pure $ Sample{context, headers}
 
-mutate :: Header StandardCrypto -> Mutation -> Gen (Header StandardCrypto)
-mutate header = \case
+shrinkSample :: Sample -> [Sample]
+shrinkSample Sample{context, headers} =
+    [ Sample{context, headers = headers'}
+    | headers' <- shrinkList (const []) headers
+    ]
+
+mutate :: GeneratorContext -> Header StandardCrypto -> Mutation -> Gen (Header StandardCrypto)
+mutate context header = \case
     NoMutation -> pure header
+    InvalidKESSignature -> do
+        let Header body _ = header
+        kesSignKey <- newKESSigningKey <$> gen32Bytes
+        KESPeriod kesPeriod <- genValidKESPeriod (hbSlotNo body) praosSlotsPerKESPeriod
+        let sig' = KES.signKES () kesPeriod body kesSignKey
+        pure $ Header body (KES.SignedKES sig')
+  where
+    GeneratorContext{praosSlotsPerKESPeriod} = context
 
-data Mutation = NoMutation
+data Mutation = NoMutation | InvalidKESSignature
     deriving (Eq, Show)
 
+instance Json.ToJSON Mutation where
+    toJSON = \case
+        NoMutation -> "NoMutation"
+        InvalidKESSignature -> "InvalidKESSignature"
+
+instance Json.FromJSON Mutation where
+    parseJSON = \case
+        "NoMutation" -> pure NoMutation
+        "InvalidKESSignature" -> pure InvalidKESSignature
+        _ -> fail "Invalid mutation"
+
+expectedError :: Mutation -> String
+expectedError = \case
+    NoMutation -> "No error"
+    InvalidKESSignature -> "InvalidKesSignatureOCERT"
+
 genMutation :: Gen Mutation
-genMutation = pure NoMutation
+genMutation =
+    frequency
+        [ (1, pure NoMutation)
+        , (1, pure InvalidKESSignature)
+        ]
+
+data MutatedHeader = MutatedHeader
+    { header :: !(Header StandardCrypto)
+    , mutation :: !Mutation
+    }
+    deriving (Show, Eq)
+
+instance Json.ToJSON MutatedHeader where
+    toJSON MutatedHeader{header, mutation} =
+        Json.object
+            [ "header" .= cborHeader
+            , "mutation" .= mutation
+            ]
+      where
+        cborHeader = decodeUtf8 . Base64.encode $ serialize' testVersion header
+
+instance Json.FromJSON MutatedHeader where
+    parseJSON = Json.withObject "MutatedHeader" $ \obj -> do
+        cborHeader <- obj .: "header"
+        mutation <- obj .: "mutation"
+        header <- parseHeader cborHeader
+        pure MutatedHeader{header, mutation}
+      where
+        parseHeader cborHeader = do
+            let headerBytes = Base64.decodeLenient (encodeUtf8 cborHeader)
+            either (fail . show) pure $ decodeFullAnnotator @(Header StandardCrypto) testVersion "Header" decCBOR $ LBS.fromStrict headerBytes
 
 -- * Generators
 type KESKey = KES.SignKeyKES (KES.Sum6KES Ed25519DSIGN Blake2b_256)

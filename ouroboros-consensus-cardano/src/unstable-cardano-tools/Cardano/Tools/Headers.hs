@@ -18,8 +18,10 @@ import Cardano.Protocol.TPraos.OCert (ocertN)
 import Control.Monad.Except (runExcept)
 import qualified Data.Aeson as Json
 import qualified Data.ByteString.Lazy as LBS
+import Data.Char (isSpace)
 import qualified Data.Map as Map
 import Data.Maybe (fromJust)
+import qualified Data.Text as Text
 import Ouroboros.Consensus.Block (validateView)
 import Ouroboros.Consensus.Protocol.Praos (
     Praos,
@@ -34,7 +36,16 @@ import Ouroboros.Consensus.Shelley.Ledger (
  )
 
 import Ouroboros.Consensus.Shelley.Protocol.Praos ()
-import Test.Ouroboros.Consensus.Protocol.Praos.Header (GeneratorContext (..), generateSamples)
+import Test.Ouroboros.Consensus.Protocol.Praos.Header (
+    GeneratorContext (..),
+    MutatedHeader (..),
+    Mutation (..),
+    Sample (..),
+    expectedError,
+    generateSamples,
+    header,
+    mutation,
+ )
 
 type ConwayBlock = ShelleyBlock (Praos StandardCrypto) (ConwayEra StandardCrypto)
 
@@ -46,14 +57,16 @@ run Options = do
     sample <- generateSamples
     LBS.putStr $ Json.encode sample <> "\n"
 
-data ValidationResult = Valid | Invalid String
+data ValidationResult = Valid Mutation | Invalid Mutation String
     deriving (Eq, Show)
 
-validate :: GeneratorContext -> Header StandardCrypto -> ValidationResult
-validate context header =
-    case runExcept $ validateKES >> validateVRF of
-        Left err -> Invalid (show err)
-        Right _ -> Valid
+validate :: GeneratorContext -> MutatedHeader -> ValidationResult
+validate context MutatedHeader{header, mutation} =
+    case (runExcept $ validateKES >> validateVRF, mutation) of
+        (Left err, mut) | ctor err == expectedError mut -> Valid mut
+        (Left err, mut) -> Invalid mut (show err)
+        (Right _, NoMutation) -> Valid NoMutation
+        (Right _, mut) -> Invalid mut $ "Expected error from mutation " <> show mut <> ", but validation succeeded"
   where
     GeneratorContext{praosSlotsPerKESPeriod, nonce, coldSignKey, vrfSignKey} = context
     -- TODO: get these from the context
@@ -71,3 +84,6 @@ validate context header =
     headerView = validateView @ConwayBlock undefined (mkShelleyHeader header)
     validateKES = doValidateKESSignature maxKESEvo praosSlotsPerKESPeriod poolDistr ocertCounters headerView
     validateVRF = doValidateVRFSignature nonce poolDistr slotCoeff headerView
+
+ctor :: (Show e) => e -> String
+ctor err = Text.unpack $ head $ concatMap (Text.split isSpace) $ Text.split (== '(') $ Text.pack $ show err

@@ -16,87 +16,116 @@
 {-# LANGUAGE ViewPatterns #-}
 
 module Ouroboros.Consensus.Protocol.Praos (
-    ConsensusConfig (..)
-  , Praos
-  , PraosCannotForge (..)
-  , PraosCrypto
-  , PraosFields (..)
-  , PraosIsLeader (..)
-  , PraosParams (..)
-  , PraosState (..)
-  , PraosToSign (..)
-  , PraosValidationErr (..)
-  , Ticked (..)
-  , forgePraosFields
-  , praosCheckCanForge
-    -- * For testing purposes
-  , doValidateKESSignature
-  , doValidateVRFSignature
-  ) where
+    ConsensusConfig (..),
+    Praos,
+    PraosCannotForge (..),
+    PraosCrypto,
+    PraosFields (..),
+    PraosIsLeader (..),
+    PraosParams (..),
+    PraosState (..),
+    PraosToSign (..),
+    PraosValidationErr (..),
+    Ticked (..),
+    forgePraosFields,
+    praosCheckCanForge,
 
-import           Cardano.Binary (FromCBOR (..), ToCBOR (..), enforceSize)
+    -- * For testing purposes
+    doValidateKESSignature,
+    doValidateVRFSignature,
+) where
+
+import Cardano.Binary (FromCBOR (..), ToCBOR (..), enforceSize)
 import qualified Cardano.Crypto.DSIGN as DSIGN
 import qualified Cardano.Crypto.KES as KES
-import           Cardano.Crypto.VRF (hashVerKeyVRF)
+import Cardano.Crypto.VRF (hashVerKeyVRF)
 import qualified Cardano.Crypto.VRF as VRF
-import           Cardano.Ledger.BaseTypes (ActiveSlotCoeff, Nonce, (⭒))
+import Cardano.Ledger.BaseTypes (ActiveSlotCoeff, Nonce, (⭒))
 import qualified Cardano.Ledger.BaseTypes as SL
 import qualified Cardano.Ledger.Chain as SL
-import           Cardano.Ledger.Crypto (Crypto, DSIGN, KES, StandardCrypto, VRF)
-import           Cardano.Ledger.Hashes (EraIndependentTxBody)
-import           Cardano.Ledger.Keys (KeyHash, KeyRole (BlockIssuer),
-                     VKey (VKey), coerceKeyRole, hashKey)
+import Cardano.Ledger.Crypto (Crypto, DSIGN, KES, StandardCrypto, VRF)
+import Cardano.Ledger.Hashes (EraIndependentTxBody)
+import Cardano.Ledger.Keys (
+    KeyHash,
+    KeyRole (BlockIssuer),
+    VKey (VKey),
+    coerceKeyRole,
+    hashKey,
+ )
 import qualified Cardano.Ledger.Keys as SL
-import           Cardano.Ledger.PoolDistr
-                     (IndividualPoolStake (IndividualPoolStake))
+import Cardano.Ledger.PoolDistr (
+    IndividualPoolStake (IndividualPoolStake),
+ )
 import qualified Cardano.Ledger.PoolDistr as SL
-import           Cardano.Ledger.Slot (Duration (Duration), (+*))
+import Cardano.Ledger.Slot (Duration (Duration), (+*))
 import qualified Cardano.Protocol.TPraos.API as SL
-import           Cardano.Protocol.TPraos.BHeader (BoundedNatural (bvValue),
-                     checkLeaderNatValue, prevHashToNonce)
-import           Cardano.Protocol.TPraos.OCert (KESPeriod (KESPeriod),
-                     OCert (OCert), OCertSignable)
+import Cardano.Protocol.TPraos.BHeader (
+    BoundedNatural (bvValue),
+    checkLeaderNatValue,
+    prevHashToNonce,
+ )
+import Cardano.Protocol.TPraos.OCert (
+    KESPeriod (KESPeriod),
+    OCert (OCert),
+    OCertSignable,
+ )
 import qualified Cardano.Protocol.TPraos.OCert as OCert
 import qualified Cardano.Protocol.TPraos.Rules.Prtcl as SL
 import qualified Cardano.Protocol.TPraos.Rules.Tickn as SL
-import           Cardano.Slotting.EpochInfo (EpochInfo, epochInfoEpoch,
-                     epochInfoFirst, hoistEpochInfo)
-import           Cardano.Slotting.Slot (EpochNo (EpochNo), SlotNo (SlotNo),
-                     WithOrigin, unSlotNo)
-import           Cardano.Slotting.Time (SystemStart)
+import Cardano.Slotting.EpochInfo (
+    EpochInfo,
+    epochInfoEpoch,
+    epochInfoFirst,
+    hoistEpochInfo,
+ )
+import Cardano.Slotting.Slot (
+    EpochNo (EpochNo),
+    SlotNo (SlotNo),
+    WithOrigin,
+    unSlotNo,
+ )
+import Cardano.Slotting.Time (SystemStart)
 import qualified Codec.CBOR.Encoding as CBOR
-import           Codec.Serialise (Serialise (decode, encode))
-import           Control.Exception (throw)
-import           Control.Monad (unless)
-import           Control.Monad.Except (Except, runExcept, throwError)
-import           Data.Coerce (coerce)
-import           Data.Functor.Identity (runIdentity)
-import           Data.Map.Strict (Map)
+import Codec.Serialise (Serialise (decode, encode))
+import Control.Exception (throw)
+import Control.Monad (unless)
+import Control.Monad.Except (Except, runExcept, throwError)
+import Data.Coerce (coerce)
+import Data.Functor.Identity (runIdentity)
+import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import           Data.Proxy (Proxy (Proxy))
+import Data.Proxy (Proxy (Proxy))
 import qualified Data.Set as Set
-import           Data.Word (Word64)
-import           GHC.Generics (Generic)
-import           NoThunks.Class (NoThunks)
-import           Numeric.Natural (Natural)
-import           Ouroboros.Consensus.Block (WithOrigin (NotOrigin))
+import Data.Word (Word64)
+import GHC.Generics (Generic)
+import NoThunks.Class (NoThunks)
+import Numeric.Natural (Natural)
+import Ouroboros.Consensus.Block (WithOrigin (NotOrigin))
 import qualified Ouroboros.Consensus.HardFork.History as History
-import           Ouroboros.Consensus.Protocol.Abstract
-import           Ouroboros.Consensus.Protocol.Ledger.HotKey (HotKey)
+import Ouroboros.Consensus.Protocol.Abstract
+import Ouroboros.Consensus.Protocol.Ledger.HotKey (HotKey)
 import qualified Ouroboros.Consensus.Protocol.Ledger.HotKey as HotKey
-import           Ouroboros.Consensus.Protocol.Ledger.Util (isNewEpoch)
-import           Ouroboros.Consensus.Protocol.Praos.Common
-import           Ouroboros.Consensus.Protocol.Praos.Header (HeaderBody)
+import Ouroboros.Consensus.Protocol.Ledger.Util (isNewEpoch)
+import Ouroboros.Consensus.Protocol.Praos.Common
+import Ouroboros.Consensus.Protocol.Praos.Header (HeaderBody)
+import Ouroboros.Consensus.Protocol.Praos.VRF (
+    InputVRF,
+    mkInputVRF,
+    vrfLeaderValue,
+    vrfNonceValue,
+ )
 import qualified Ouroboros.Consensus.Protocol.Praos.Views as Views
-import           Ouroboros.Consensus.Protocol.Praos.VRF (InputVRF, mkInputVRF,
-                     vrfLeaderValue, vrfNonceValue)
-import           Ouroboros.Consensus.Protocol.TPraos
-                     (ConsensusConfig (TPraosConfig, tpraosEpochInfo, tpraosParams),
-                     TPraos,
-                     TPraosState (tpraosStateChainDepState, tpraosStateLastSlot))
-import           Ouroboros.Consensus.Ticked (Ticked)
-import           Ouroboros.Consensus.Util.Versioned (VersionDecoder (Decode),
-                     decodeVersion, encodeVersion)
+import Ouroboros.Consensus.Protocol.TPraos (
+    ConsensusConfig (TPraosConfig, tpraosEpochInfo, tpraosParams),
+    TPraos,
+    TPraosState (tpraosStateChainDepState, tpraosStateLastSlot),
+ )
+import Ouroboros.Consensus.Ticked (Ticked)
+import Ouroboros.Consensus.Util.Versioned (
+    VersionDecoder (Decode),
+    decodeVersion,
+    encodeVersion,
+ )
 
 data Praos c
 
@@ -117,7 +146,7 @@ instance PraosCrypto StandardCrypto
 
 data PraosFields c toSign = PraosFields
     { praosSignature :: SL.SignedKES c toSign
-    , praosToSign    :: toSign
+    , praosToSign :: toSign
     }
     deriving (Generic)
 
@@ -135,11 +164,11 @@ the block signature.
 data PraosToSign c = PraosToSign
     { praosToSignIssuerVK :: SL.VKey 'SL.BlockIssuer c
     -- ^ Verification key for the issuer of this block.
-    , praosToSignVrfVK    :: SL.VerKeyVRF c
-    , praosToSignVrfRes   :: SL.CertifiedVRF c InputVRF
+    , praosToSignVrfVK :: SL.VerKeyVRF c
+    , praosToSignVrfRes :: SL.CertifiedVRF c InputVRF
     -- ^ Verifiable random value. This is used both to prove the issuer is
     -- eligible to issue a block, and to contribute to the evolving nonce.
-    , praosToSignOCert    :: OCert.OCert c
+    , praosToSignOCert :: OCert.OCert c
     -- ^ Lightweight delegation certificate mapping the cold (DSIGN) key to
     -- the online KES key.
     }
@@ -191,29 +220,29 @@ forgePraosFields
 
 -- | Praos parameters that are node independent
 data PraosParams = PraosParams
-    { praosSlotsPerKESPeriod             :: !Word64
+    { praosSlotsPerKESPeriod :: !Word64
     -- ^ See 'Globals.slotsPerKESPeriod'.
-    , praosLeaderF                       :: !SL.ActiveSlotCoeff
+    , praosLeaderF :: !SL.ActiveSlotCoeff
     -- ^ Active slots coefficient. This parameter represents the proportion
     -- of slots in which blocks should be issued. This can be interpreted as
     -- the probability that a party holding all the stake will be elected as
     -- leader for a given slot.
-    , praosSecurityParam                 :: !SecurityParam
+    , praosSecurityParam :: !SecurityParam
     -- ^ See 'Globals.securityParameter'.
-    , praosMaxKESEvo                     :: !Word64
+    , praosMaxKESEvo :: !Word64
     -- ^ Maximum number of KES iterations, see 'Globals.maxKESEvo'.
-    , praosQuorum                        :: !Word64
+    , praosQuorum :: !Word64
     -- ^ Quorum for update system votes and MIR certificates, see
     -- 'Globals.quorum'.
-    , praosMaxMajorPV                    :: !MaxMajorProtVer
+    , praosMaxMajorPV :: !MaxMajorProtVer
     -- ^ All blocks invalid after this protocol version, see
     -- 'Globals.maxMajorPV'.
-    , praosMaxLovelaceSupply             :: !Word64
+    , praosMaxLovelaceSupply :: !Word64
     -- ^ Maximum number of lovelace in the system, see
     -- 'Globals.maxLovelaceSupply'.
-    , praosNetworkId                     :: !SL.Network
+    , praosNetworkId :: !SL.Network
     -- ^ Testnet or mainnet?
-    , praosSystemStart                   :: !SystemStart
+    , praosSystemStart :: !SystemStart
     -- ^ The system start, as projected from the chain's genesis block.
     , praosRandomnessStabilisationWindow :: !Word64
     -- ^ The number of slots before the start of an epoch where the
@@ -259,16 +288,16 @@ as a series of nonces which get updated in different ways over the course of
 an epoch.
 -}
 data PraosState c = PraosState
-    { praosStateLastSlot            :: !(WithOrigin SlotNo)
-    , praosStateOCertCounters       :: !(Map (KeyHash 'BlockIssuer c) Word64)
+    { praosStateLastSlot :: !(WithOrigin SlotNo)
+    , praosStateOCertCounters :: !(Map (KeyHash 'BlockIssuer c) Word64)
     -- ^ Operation Certificate counters
-    , praosStateEvolvingNonce       :: !Nonce
+    , praosStateEvolvingNonce :: !Nonce
     -- ^ Evolving nonce
-    , praosStateCandidateNonce      :: !Nonce
+    , praosStateCandidateNonce :: !Nonce
     -- ^ Candidate nonce
-    , praosStateEpochNonce          :: !Nonce
+    , praosStateEpochNonce :: !Nonce
     -- ^ Epoch nonce
-    , praosStateLabNonce            :: !Nonce
+    , praosStateLabNonce :: !Nonce
     -- ^ Nonce constructed from the hash of the previous block
     , praosStateLastEpochBlockNonce :: !Nonce
     -- ^ Nonce corresponding to the LAB nonce of the last block of the previous

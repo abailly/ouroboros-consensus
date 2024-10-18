@@ -1,16 +1,30 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Test.Cardano.Tools.Headers (tests) where
 
 import Cardano.Tools.Headers (ValidationResult (..), validate)
 import qualified Data.Aeson as Json
-import Data.Char (isSpace)
-import qualified Data.Text as Text
-import Test.Ouroboros.Consensus.Protocol.Praos.Header (genContext, genHeader, genSample)
-import Test.QuickCheck (Property, forAll, (===))
+import Data.Function ((&))
+import qualified Data.Text.Lazy as LT
+import Data.Text.Lazy.Encoding (decodeUtf8)
+import Test.Ouroboros.Consensus.Protocol.Praos.Header (
+    Sample (..),
+    genSample,
+    shrinkSample,
+ )
+import Test.QuickCheck (
+    Property,
+    conjoin,
+    counterexample,
+    forAll,
+    forAllBlind,
+    forAllShrinkBlind,
+    label,
+    property,
+    shrink,
+    (===),
+ )
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.QuickCheck (testProperty)
 
@@ -29,14 +43,16 @@ prop_roundtrip_json_samples =
             decoded = Json.eitherDecode encoded
          in decoded === Right sample
 
-ctor :: (Show e) => Either e a -> String
-ctor = \case
-    (Left err) ->
-        Text.unpack $ head $ concatMap (Text.split isSpace) $ Text.split (== '(') $ Text.pack $ show err
-    (Right _) -> error "ctor: Right"
+matchExpectedValidationResult :: Sample -> Property
+matchExpectedValidationResult Sample{context, headers} =
+    let results = map (validate context) headers
+        toProp = \case
+            Valid mut -> property True & label (show mut)
+            Invalid mut err -> property False & counterexample ("Expected: " <> show mut <> "\nError: " <> err)
+     in conjoin (map toProp results)
 
 prop_validate_legit_header :: Property
 prop_validate_legit_header =
-    forAll genContext $ \context ->
-        forAll (genHeader context) $ \header ->
-            validate context header === Valid
+    forAllShrinkBlind genSample shrinkSample $ \sample ->
+        matchExpectedValidationResult sample
+            & counterexample (LT.unpack $ decodeUtf8 $ Json.encode sample)
