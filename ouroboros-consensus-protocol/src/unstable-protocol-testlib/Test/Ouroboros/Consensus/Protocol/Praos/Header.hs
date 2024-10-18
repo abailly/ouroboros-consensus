@@ -1,9 +1,14 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Test.Ouroboros.Consensus.Protocol.Praos.Header (genHeader) where
+module Test.Ouroboros.Consensus.Protocol.Praos.Header (
+    genContext,
+    GeneratorContext (..),
+    genHeader,
+) where
 
 import Cardano.Crypto.DSIGN (
     DSIGNAlgorithm (SignKeyDSIGN, genKeyDSIGN),
@@ -14,6 +19,7 @@ import Cardano.Crypto.Hash (Blake2b_256, Hash, hash)
 import qualified Cardano.Crypto.KES as KES
 import Cardano.Crypto.KES.Class (genKeyKES)
 import Cardano.Crypto.Seed (mkSeedFromBytes)
+import Cardano.Crypto.VRF (deriveVerKeyVRF)
 import qualified Cardano.Crypto.VRF as VRF
 import qualified Cardano.Crypto.VRF.Praos as VRF
 import Cardano.Ledger.BaseTypes (
@@ -55,35 +61,54 @@ newVRFSigningKey = VRF.genKeyPairVRF . mkSeedFromBytes
 newKESSigningKey :: ByteString -> KESKey
 newKESSigningKey = genKeyKES . mkSeedFromBytes
 
+data GeneratorContext = GeneratorContext
+    { praosSlotsPerKESPeriod :: Word64
+    , kesSignKey :: KESKey
+    , coldSignKey :: SignKeyDSIGN Ed25519DSIGN
+    , vrfSignKey :: VRF.SignKeyVRF VRF.PraosVRF
+    , nonce :: Nonce
+    }
+    deriving (Show)
+
+genContext :: Gen GeneratorContext
+genContext = do
+    praosSlotsPerKESPeriod <- choose (100, 10000)
+    kesSignKey <- newKESSigningKey <$> gen32Bytes
+    coldSignKey <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
+    vrfSignKey <- fst <$> newVRFSigningKey <$> gen32Bytes
+    nonce <- Nonce <$> genHash
+    pure $ GeneratorContext{..}
+
 {- | Generate a well-formed header
 
 The header is signed with the KES key, and all the signing keys
 generated for the purpose of producing the header are returned.
 -}
-genHeader :: Word64 -> Gen (Header StandardCrypto, Nonce, KESKey, SignKeyDSIGN Ed25519DSIGN, VRF.SignKeyVRF VRF.PraosVRF)
-genHeader praosSlotsPerKESPeriod = do
-    (body, nonce, KESPeriod kesPeriod, kesSignKey, coldSignKey, vrfSignKey) <- genHeaderBody praosSlotsPerKESPeriod
+genHeader :: GeneratorContext -> Gen (Header StandardCrypto)
+genHeader context = do
+    (body, KESPeriod kesPeriod) <- genHeaderBody context
     let sign = KES.SignedKES $ KES.signKES () kesPeriod body kesSignKey
-    pure $ (Header body sign, nonce, kesSignKey, coldSignKey, vrfSignKey)
+    pure $ (Header body sign)
+  where
+    GeneratorContext{kesSignKey} = context
 
-genHeaderBody :: Word64 -> Gen (HeaderBody StandardCrypto, Nonce, KESPeriod, KESKey, SignKeyDSIGN Ed25519DSIGN, VRF.SignKeyVRF VRF.PraosVRF)
-genHeaderBody praosSlotsPerKESPeriod = do
-    coldSk <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
+genHeaderBody :: GeneratorContext -> Gen (HeaderBody StandardCrypto, KESPeriod)
+genHeaderBody context = do
     hbBlockNo <- BlockNo <$> arbitrary
     hbSlotNo <- SlotNo . getPositive <$> arbitrary
     hbPrev <- BlockHash . HashHeader <$> genHash
-    let hbVk = VKey $ deriveVerKeyDSIGN coldSk
-    (issuerVrfSk, hbVrfVk) <- newVRFSigningKey <$> gen32Bytes
-    nonce <- Nonce <$> genHash
+    let hbVk = VKey $ deriveVerKeyDSIGN coldSignKey
     let rho' = mkInputVRF hbSlotNo nonce
-        hbVrfRes = VRF.evalCertified () rho' issuerVrfSk
-
+        hbVrfRes = VRF.evalCertified () rho' vrfSignKey
+        hbVrfVk = deriveVerKeyVRF vrfSignKey
     hbBodySize <- choose (1000, 90000)
-    hbBodyHash <- genHash -- !(Hash crypto EraIndependentBlockBody)
-    (hbOCert, kesPeriod, kesSignKey) <- genCert hbSlotNo praosSlotsPerKESPeriod coldSk --  :: !(OCert crypto)
+    hbBodyHash <- genHash
+    (hbOCert, kesPeriod) <- genCert hbSlotNo context
     let hbProtVer = protocolVersionZero
         headerBody = HeaderBody{..}
-    pure $ (headerBody, nonce, kesPeriod, kesSignKey, coldSk, issuerVrfSk)
+    pure $ (headerBody, kesPeriod)
+  where
+    GeneratorContext{coldSignKey, vrfSignKey, nonce} = context
 
 protocolVersionZero :: ProtVer
 protocolVersionZero = ProtVer versionZero 0
@@ -91,14 +116,15 @@ protocolVersionZero = ProtVer versionZero 0
     versionZero :: Version
     versionZero = natVersion @0
 
-genCert :: SlotNo -> Word64 -> SignKeyDSIGN Ed25519DSIGN -> Gen (OCert StandardCrypto, KESPeriod, KES.SignKeyKES (KES.Sum6KES Ed25519DSIGN Blake2b_256))
-genCert slotNo praosSlotsPerKESPeriod sKeyCold = do
-    kesSigningKey <- newKESSigningKey <$> gen32Bytes
-    let ocertVkHot = KES.deriveVerKeyKES kesSigningKey
+genCert :: SlotNo -> GeneratorContext -> Gen (OCert StandardCrypto, KESPeriod)
+genCert slotNo context = do
+    let ocertVkHot = KES.deriveVerKeyKES kesSignKey
     ocertN <- arbitrary
     ocertKESPeriod <- genValidKESPeriod slotNo praosSlotsPerKESPeriod
-    let ocertSigma = signedDSIGN @StandardCrypto sKeyCold (OCertSignable ocertVkHot ocertN ocertKESPeriod)
-    pure (OCert{..}, ocertKESPeriod, kesSigningKey)
+    let ocertSigma = signedDSIGN @StandardCrypto coldSignKey (OCertSignable ocertVkHot ocertN ocertKESPeriod)
+    pure (OCert{..}, ocertKESPeriod)
+  where
+    GeneratorContext{kesSignKey, praosSlotsPerKESPeriod, coldSignKey} = context
 
 genValidKESPeriod :: SlotNo -> Word64 -> Gen KESPeriod
 genValidKESPeriod slotNo praosSlotsPerKESPeriod =

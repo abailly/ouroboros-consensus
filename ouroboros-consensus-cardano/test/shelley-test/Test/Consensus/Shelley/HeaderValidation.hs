@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -38,7 +39,7 @@ import Ouroboros.Consensus.Shelley.Protocol.Abstract (
     protocolHeaderView,
  )
 import Ouroboros.Consensus.Shelley.Protocol.Praos ()
-import Test.Ouroboros.Consensus.Protocol.Praos.Header (genHeader)
+import Test.Ouroboros.Consensus.Protocol.Praos.Header (GeneratorContext (..), genContext, genHeader)
 import Test.QuickCheck (Property, choose, forAll, label, (===))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.QuickCheck (testProperty)
@@ -56,21 +57,21 @@ coin = fromJust . toCompact . Coin
 prop_reject_incorrect_header :: Property
 prop_reject_incorrect_header =
     let maxKESEvo = 63
-        praosSlotsPerKESPeriod = 100
         slotCoeff = mkActiveSlotCoeff $ fromJust $ boundRational @PositiveUnitInterval $ 5 % 20
      in forAll ((% 10000) <$> choose (0, 100)) $ \stakeRatio ->
-            forAll (genHeader praosSlotsPerKESPeriod) $ \(header, nonce, _signKeyKES, signColdKey, signKeyVRF) ->
-                let poolId = hashKey $ VKey $ deriveVerKeyDSIGN signColdKey
-                    hashVRFKey = hashVerKeyVRF $ deriveVerKeyVRF signKeyVRF
-                    poolDistr = Map.fromList [(poolId, IndividualPoolStake stakeRatio (coin 1) hashVRFKey)]
-                    Header body _ = header
-                    certCounter = ocertN . hbOCert $ body
-                    ocertCounters = Map.fromList [(poolId, certCounter)]
-                    headerView = validateView @ConwayBlock undefined (mkShelleyHeader header)
-                    validateKES = doValidateKESSignature maxKESEvo praosSlotsPerKESPeriod poolDistr ocertCounters headerView
-                    validateVRF = doValidateVRFSignature nonce poolDistr slotCoeff headerView
-                    result = runExcept (validateKES >> validateVRF)
-                 in isLeft result & label (ctor result)
+            forAll genContext $ \context@GeneratorContext{praosSlotsPerKESPeriod, nonce, coldSignKey, vrfSignKey} ->
+                forAll (genHeader context) $ \header ->
+                    let poolId = hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+                        hashVRFKey = hashVerKeyVRF $ deriveVerKeyVRF vrfSignKey
+                        poolDistr = Map.fromList [(poolId, IndividualPoolStake stakeRatio (coin 1) hashVRFKey)]
+                        Header body _ = header
+                        certCounter = ocertN . hbOCert $ body
+                        ocertCounters = Map.fromList [(poolId, certCounter)]
+                        headerView = validateView @ConwayBlock undefined (mkShelleyHeader header)
+                        validateKES = doValidateKESSignature maxKESEvo praosSlotsPerKESPeriod poolDistr ocertCounters headerView
+                        validateVRF = doValidateVRFSignature nonce poolDistr slotCoeff headerView
+                        result = runExcept (validateKES >> validateVRF)
+                     in isLeft result & label (ctor result)
 
 ctor :: (Show e) => Either e a -> String
 ctor = \case
@@ -81,19 +82,19 @@ ctor = \case
 prop_validate_legit_header :: Property
 prop_validate_legit_header =
     let maxKESEvo = 63
-        praosSlotsPerKESPeriod = 100
         slotCoeff = mkActiveSlotCoeff $ fromJust $ boundRational @PositiveUnitInterval $ 1
         ownsAllStake vrfKey = IndividualPoolStake 1 (coin 1) vrfKey
-     in forAll (genHeader praosSlotsPerKESPeriod) $ \(header, nonce, _signKeyKES, signColdKey, signKeyVRF) ->
-            let poolId = hashKey $ VKey $ deriveVerKeyDSIGN signColdKey
-                hashVRFKey = hashVerKeyVRF $ deriveVerKeyVRF signKeyVRF
-                poolDistr = Map.fromList [(poolId, ownsAllStake hashVRFKey)]
-                Header body _ = header
-                certCounter = ocertN . hbOCert $ body
-                ocertCounters = Map.fromList [(poolId, certCounter)]
-                headerView = validateView @ConwayBlock undefined (mkShelleyHeader header)
-                validateKES = doValidateKESSignature maxKESEvo praosSlotsPerKESPeriod poolDistr ocertCounters headerView
-                validateVRF = doValidateVRFSignature nonce poolDistr slotCoeff headerView
-             in runExcept (validateKES >> validateVRF) === Right ()
+     in forAll genContext $ \context@GeneratorContext{praosSlotsPerKESPeriod, nonce, coldSignKey, vrfSignKey} ->
+            forAll (genHeader context) $ \(header) ->
+                let poolId = hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+                    hashVRFKey = hashVerKeyVRF $ deriveVerKeyVRF vrfSignKey
+                    poolDistr = Map.fromList [(poolId, ownsAllStake hashVRFKey)]
+                    Header body _ = header
+                    certCounter = ocertN . hbOCert $ body
+                    ocertCounters = Map.fromList [(poolId, certCounter)]
+                    headerView = validateView @ConwayBlock undefined (mkShelleyHeader header)
+                    validateKES = doValidateKESSignature maxKESEvo praosSlotsPerKESPeriod poolDistr ocertCounters headerView
+                    validateVRF = doValidateVRFSignature nonce poolDistr slotCoeff headerView
+                 in runExcept (validateKES >> validateVRF) === Right ()
 
 type ConwayBlock = ShelleyBlock (Praos StandardCrypto) (ConwayEra StandardCrypto)
