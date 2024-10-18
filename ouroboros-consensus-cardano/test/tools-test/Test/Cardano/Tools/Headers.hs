@@ -10,6 +10,8 @@ import qualified Data.Text.Lazy as LT
 import Data.Text.Lazy.Encoding (decodeUtf8)
 import Test.Ouroboros.Consensus.Protocol.Praos.Header (
     Sample (..),
+    genContext,
+    genMutatedHeader,
     genSample,
     shrinkSample,
  )
@@ -43,16 +45,10 @@ prop_roundtrip_json_samples =
             decoded = Json.eitherDecode encoded
          in decoded === Right sample
 
-matchExpectedValidationResult :: Sample -> Property
-matchExpectedValidationResult Sample{context, headers} =
-    let results = map (validate context) headers
-        toProp = \case
-            Valid mut -> property True & label (show mut)
-            Invalid mut err -> property False & counterexample ("Expected: " <> show mut <> "\nError: " <> err)
-     in conjoin (map toProp results)
-
 prop_validate_legit_header :: Property
 prop_validate_legit_header =
-    forAllShrinkBlind genSample shrinkSample $ \sample ->
-        matchExpectedValidationResult sample
-            & counterexample (LT.unpack $ decodeUtf8 $ Json.encode sample)
+    forAll genContext $ \context ->
+        forAll (genMutatedHeader context) $ \header ->
+            case validate context header of
+                Valid mut -> property True & label (show mut)
+                Invalid mut err -> property False & counterexample ("Expected: " <> show mut <> "\nError: " <> err)

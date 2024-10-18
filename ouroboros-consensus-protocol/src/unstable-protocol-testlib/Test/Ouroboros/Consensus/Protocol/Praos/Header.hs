@@ -90,12 +90,15 @@ instance Json.FromJSON Sample where
 genSample :: Gen Sample
 genSample = do
     context <- genContext
-    headers <- sized $ \n -> vectorOf n $ do
-        mutation <- genMutation
-        header <- genHeader context
-        mutated <- mutate context header mutation
-        pure $ MutatedHeader{header = mutated, mutation}
+    headers <- sized $ \n -> vectorOf n $ genMutatedHeader context
     pure $ Sample{context, headers}
+
+genMutatedHeader :: GeneratorContext -> Gen MutatedHeader
+genMutatedHeader context = do
+    mutation <- genMutation
+    header <- genHeader context
+    mutated <- mutate context header mutation
+    pure $ MutatedHeader{header = mutated, mutation}
 
 shrinkSample :: Sample -> [Sample]
 shrinkSample Sample{context, headers} =
