@@ -150,6 +150,12 @@ mutate context header mutation =
                 newCounter <- choose (0, oldCounter)
                 let context' = context{ocertCounters = Map.insert poolId newCounter (ocertCounters context)}
                 pure (context', header)
+            MutateCounterUnder -> do
+                let poolId = coerce $ hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+                    oldCounter = fromMaybe 0 $ Map.lookup poolId (ocertCounters context)
+                newCounter <- arbitrary `suchThat` (> oldCounter)
+                let context' = context{ocertCounters = Map.insert poolId newCounter (ocertCounters context)}
+                pure (context', header)
     GeneratorContext{praosSlotsPerKESPeriod, praosMaxKESEvo, kesSignKey, vrfSignKey, coldSignKey, nonce} = context
 
 data Mutation
@@ -166,6 +172,8 @@ data Mutation
       MutateKESPeriodBefore
     | -- | Mutate certificate counter to be greater than expected
       MutateCounterOver1
+    | -- | Mutate certificate counter to be lower than expected
+      MutateCounterUnder
     deriving (Eq, Show)
 
 instance Json.ToJSON Mutation where
@@ -176,6 +184,7 @@ instance Json.ToJSON Mutation where
         MutateKESPeriod -> "MutateKESPeriod"
         MutateKESPeriodBefore -> "MutateKESPeriodBefore"
         MutateCounterOver1 -> "MutateCounterOver1"
+        MutateCounterUnder -> "MutateCounterUnder"
 
 instance Json.FromJSON Mutation where
     parseJSON = \case
@@ -185,6 +194,7 @@ instance Json.FromJSON Mutation where
         "MutateKESPeriod" -> pure MutateKESPeriod
         "MutateKESPeriodBefore" -> pure MutateKESPeriodBefore
         "MutateCounterOver1" -> pure MutateCounterOver1
+        "MutateCounterUnder" -> pure MutateCounterUnder
         _ -> fail "Invalid mutation"
 
 expectedError :: Mutation -> (PraosValidationErr StandardCrypto -> Bool)
@@ -205,16 +215,20 @@ expectedError = \case
     MutateCounterOver1 -> \case
         CounterOverIncrementedOCERT{} -> True
         _ -> False
+    MutateCounterUnder -> \case
+        CounterTooSmallOCERT{} -> True
+        _ -> False
 
 genMutation :: Gen Mutation
 genMutation =
     frequency
-        [ (3, pure NoMutation)
+        [ (4, pure NoMutation)
         , (1, pure MutateKESKey)
         , (1, pure MutateColdKey)
         , (1, pure MutateKESPeriod)
         , (1, pure MutateKESPeriodBefore)
         , (1, pure MutateCounterOver1)
+        , (1, pure MutateCounterUnder)
         ]
 
 data MutatedHeader = MutatedHeader
