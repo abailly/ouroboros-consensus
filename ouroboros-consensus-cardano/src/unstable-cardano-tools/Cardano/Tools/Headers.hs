@@ -19,17 +19,15 @@ import Cardano.Protocol.TPraos.OCert (ocertN)
 import Control.Monad.Except (runExcept)
 import qualified Data.Aeson as Json
 import qualified Data.ByteString.Lazy as LBS
-import Data.Char (isSpace)
 import qualified Data.Map as Map
 import Data.Maybe (fromJust)
-import qualified Data.Text as Text
 import Ouroboros.Consensus.Block (validateView)
 import Ouroboros.Consensus.Protocol.Praos (
     Praos,
     doValidateKESSignature,
     doValidateVRFSignature,
  )
-import Ouroboros.Consensus.Protocol.Praos.Header (Header, hbOCert, pattern Header)
+import Ouroboros.Consensus.Protocol.Praos.Header (hbOCert, pattern Header)
 import Ouroboros.Consensus.Shelley.HFEras ()
 import Ouroboros.Consensus.Shelley.Ledger (
     ShelleyBlock,
@@ -95,6 +93,3 @@ validate context MutatedHeader{header, mutation} =
     headerView = validateView @ConwayBlock undefined (mkShelleyHeader header)
     validateKES = doValidateKESSignature maxKESEvo praosSlotsPerKESPeriod poolDistr ocertCounters headerView
     validateVRF = doValidateVRFSignature nonce poolDistr slotCoeff headerView
-
-ctor :: (Show e) => e -> String
-ctor err = Text.unpack $ head $ concatMap (Text.split isSpace) $ Text.split (== '(') $ Text.pack $ show err
