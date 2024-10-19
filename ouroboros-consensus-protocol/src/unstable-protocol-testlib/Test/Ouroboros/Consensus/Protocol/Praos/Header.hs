@@ -29,7 +29,7 @@ import Cardano.Ledger.BaseTypes (
     natVersion,
  )
 import Cardano.Ledger.Binary (MaxVersion, decCBOR, decodeFull', decodeFullAnnotator, serialize')
-import Cardano.Ledger.Keys (VKey (..), signedDSIGN)
+import Cardano.Ledger.Keys (KeyHash, KeyRole (BlockIssuer), VKey (..), hashKey, signedDSIGN)
 import Cardano.Protocol.TPraos.BHeader (
     HashHeader (..),
     PrevHash (..),
@@ -50,6 +50,8 @@ import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LBS
 import Data.Coerce (coerce)
 import Data.Foldable (toList)
+import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Word (Word64)
 import Ouroboros.Consensus.Protocol.Praos (PraosValidationErr (..))
@@ -241,6 +243,7 @@ data GeneratorContext = GeneratorContext
     , coldSignKey :: !(SignKeyDSIGN Ed25519DSIGN)
     , vrfSignKey :: !(VRF.SignKeyVRF VRF.PraosVRF)
     , nonce :: !Nonce
+    , ocertCounters :: !(Map.Map (KeyHash BlockIssuer StandardCrypto) Word64)
     }
     deriving (Show)
 
@@ -262,6 +265,7 @@ instance Json.ToJSON GeneratorContext where
             , "coldSignKey" .= cborColdSignKey
             , "vrfSignKey" .= cborVrfSignKey
             , "nonce" .= cborNonce
+            , "ocertCounters" .= ocertCounters
             ]
       where
         cborKesSignKey = decodeUtf8 . Base64.encode $ serialize' testVersion kesSignKey
@@ -277,6 +281,7 @@ instance Json.FromJSON GeneratorContext where
         cborColdSignKey <- obj .: "coldSignKey"
         cborVrfSignKey <- obj .: "vrfSignKey"
         cborNonce <- obj .: "nonce"
+        ocertCounters <- obj .: "ocertCounters"
         kesSignKey <- parseKey cborKesSignKey
         coldSignKey <- parseKey cborColdSignKey
         vrfSignKey <- parseKey cborVrfSignKey
@@ -291,10 +296,13 @@ genContext :: Gen GeneratorContext
 genContext = do
     praosSlotsPerKESPeriod <- choose (100, 10000)
     praosMaxKESEvo <- choose (10, 1000)
+    ocertCounter <- choose (0, 100)
     kesSignKey <- newKESSigningKey <$> gen32Bytes
     coldSignKey <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
     vrfSignKey <- fst <$> newVRFSigningKey <$> gen32Bytes
     nonce <- Nonce <$> genHash
+    let poolId = coerce $ hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+        ocertCounters = Map.fromList [(poolId, ocertCounter)]
     pure $ GeneratorContext{..}
 
 {- | Generate a well-formed header
@@ -337,12 +345,13 @@ protocolVersionZero = ProtVer versionZero 0
 genCert :: SlotNo -> GeneratorContext -> Gen (OCert StandardCrypto, KESPeriod)
 genCert slotNo context = do
     let ocertVkHot = KES.deriveVerKeyKES kesSignKey
-    ocertN <- arbitrary
+        poolId = coerce $ hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+        ocertN = fromMaybe 0 $ Map.lookup poolId ocertCounters
     ocertKESPeriod <- genValidKESPeriod slotNo praosSlotsPerKESPeriod
     let ocertSigma = signedDSIGN @StandardCrypto coldSignKey (OCertSignable ocertVkHot ocertN ocertKESPeriod)
     pure (OCert{..}, ocertKESPeriod)
   where
-    GeneratorContext{kesSignKey, praosSlotsPerKESPeriod, coldSignKey} = context
+    GeneratorContext{kesSignKey, praosSlotsPerKESPeriod, coldSignKey, ocertCounters} = context
 
 genValidKESPeriod :: SlotNo -> Word64 -> Gen KESPeriod
 genValidKESPeriod slotNo praosSlotsPerKESPeriod =

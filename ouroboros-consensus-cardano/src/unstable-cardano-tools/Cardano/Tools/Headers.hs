@@ -1,8 +1,8 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 -- | Tooling to generate and validate (Praos) headers.
 module Cardano.Tools.Headers where
@@ -15,7 +15,6 @@ import Cardano.Ledger.Coin (Coin (..))
 import Cardano.Ledger.Compactible (toCompact)
 import Cardano.Ledger.Keys (VKey (..), hashKey)
 import Cardano.Ledger.PoolDistr (IndividualPoolStake (..))
-import Cardano.Protocol.TPraos.OCert (ocertN)
 import Control.Monad.Except (runExcept)
 import qualified Data.Aeson as Json
 import qualified Data.ByteString.Lazy as LBS
@@ -27,7 +26,6 @@ import Ouroboros.Consensus.Protocol.Praos (
     doValidateKESSignature,
     doValidateVRFSignature,
  )
-import Ouroboros.Consensus.Protocol.Praos.Header (hbOCert, pattern Header)
 import Ouroboros.Consensus.Shelley.HFEras ()
 import Ouroboros.Consensus.Shelley.Ledger (
     ShelleyBlock,
@@ -77,7 +75,7 @@ validate context MutatedHeader{header, mutation} =
         (Right _, NoMutation) -> Valid NoMutation
         (Right _, mut) -> Invalid mut $ "Expected error from mutation " <> show mut <> ", but validation succeeded"
   where
-    GeneratorContext{praosSlotsPerKESPeriod, nonce, coldSignKey, vrfSignKey} = context
+    GeneratorContext{praosSlotsPerKESPeriod, nonce, coldSignKey, vrfSignKey, ocertCounters} = context
     -- TODO: get these from the context
     maxKESEvo = 63
     coin = fromJust . toCompact . Coin
@@ -86,9 +84,6 @@ validate context MutatedHeader{header, mutation} =
     poolDistr = Map.fromList [(poolId, ownsAllStake hashVRFKey)]
     poolId = hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
     hashVRFKey = hashVerKeyVRF $ deriveVerKeyVRF vrfSignKey
-    Header body _ = header
-    certCounter = ocertN . hbOCert $ body
-    ocertCounters = Map.fromList [(poolId, certCounter)]
 
     headerView = validateView @ConwayBlock undefined (mkShelleyHeader header)
     validateKES = doValidateKESSignature maxKESEvo praosSlotsPerKESPeriod poolDistr ocertCounters headerView

@@ -6,22 +6,17 @@ import Data.Function ((&))
 import qualified Data.Text.Lazy as LT
 import Data.Text.Lazy.Encoding (decodeUtf8)
 import Test.Ouroboros.Consensus.Protocol.Praos.Header (
-    Sample (..),
     genContext,
     genMutatedHeader,
     genSample,
-    shrinkSample,
  )
 import Test.QuickCheck (
     Property,
-    conjoin,
     counterexample,
     forAll,
     forAllBlind,
-    forAllShrinkBlind,
     label,
     property,
-    shrink,
     (===),
  )
 import Test.Tasty (TestTree, testGroup)
@@ -45,9 +40,9 @@ prop_roundtrip_json_samples =
 prop_validate_legit_header :: Property
 prop_validate_legit_header =
     forAllBlind genContext $ \context ->
-        forAllBlind (genMutatedHeader context) $ \header ->
+        forAllBlind (genMutatedHeader context) $ \(context', header) ->
             annotate context header $
-                case validate context header of
+                case validate context' header of
                     Valid mut -> property True & label (show mut)
                     Invalid mut err -> property False & counterexample ("Expected: " <> show mut <> "\nError: " <> err)
   where

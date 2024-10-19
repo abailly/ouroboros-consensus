@@ -101,6 +101,7 @@ library unstable-protocol-testlib
     cardano-ledger-shelley-test,
     cardano-protocol-tpraos,
     cardano-slotting,
+    containers,
     ouroboros-consensus-protocol,
     text
 
