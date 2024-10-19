@@ -57,7 +57,7 @@ prop_validate_legit_header =
                 [ "context:"
                 , asJson context
                 , "header:"
-                , asJson header
+                , show header
                 ]
             )
 

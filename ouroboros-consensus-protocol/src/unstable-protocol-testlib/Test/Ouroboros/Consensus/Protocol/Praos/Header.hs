@@ -50,6 +50,7 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Coerce (coerce)
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Word (Word64)
+import Ouroboros.Consensus.Protocol.Praos (PraosValidationErr (..))
 import Ouroboros.Consensus.Protocol.Praos.Header (
     Header,
     HeaderBody (..),
@@ -137,8 +138,17 @@ mutate context header = \case
                     }
         let sig' = KES.signKES () kesPeriod' newBody kesSignKey
         pure $ Header newBody (KES.SignedKES sig')
+    MutateKESPeriodBefore -> do
+        let Header body _ = header
+        let OCert{ocertKESPeriod = KESPeriod kesPeriod} = hbOCert body
+        newSlotNo <- genSlotAfterKESPeriod (fromIntegral kesPeriod) praosMaxKESEvo praosSlotsPerKESPeriod
+        let rho' = mkInputVRF newSlotNo nonce
+            hbVrfRes = VRF.evalCertified () rho' vrfSignKey
+            newBody = body{hbSlotNo = newSlotNo, hbVrfRes}
+            sig' = KES.signKES () kesPeriod newBody kesSignKey
+        pure $ Header newBody (KES.SignedKES sig')
   where
-    GeneratorContext{praosSlotsPerKESPeriod, kesSignKey, coldSignKey} = context
+    GeneratorContext{praosSlotsPerKESPeriod, praosMaxKESEvo, kesSignKey, vrfSignKey, coldSignKey, nonce} = context
 
 data Mutation
     = -- | No mutation
@@ -148,8 +158,10 @@ data Mutation
     | -- | Mutate the cold key, ie. sign the operational certificate with a different cold key.
       MutateColdKey
     | -- | Mutate the KES period in the operational certificate to be
-      -- before the start of the KES period.
+      -- after the start of the KES period.
       MutateKESPeriod
+    | -- | Mutate KES period to be before the current KES period
+      MutateKESPeriodBefore
     deriving (Eq, Show)
 
 instance Json.ToJSON Mutation where
@@ -158,6 +170,7 @@ instance Json.ToJSON Mutation where
         MutateKESKey -> "MutateKESKey"
         MutateColdKey -> "MutateColdKey"
         MutateKESPeriod -> "MutateKESPeriod"
+        MutateKESPeriodBefore -> "MutateKESPeriodBefore"
 
 instance Json.FromJSON Mutation where
     parseJSON = \case
@@ -165,14 +178,24 @@ instance Json.FromJSON Mutation where
         "MutateKESKey" -> pure MutateKESKey
         "MutateColdKey" -> pure MutateColdKey
         "MutateKESPeriod" -> pure MutateKESPeriod
+        "MutateKESPeriodBefore" -> pure MutateKESPeriodBefore
         _ -> fail "Invalid mutation"
 
-expectedError :: Mutation -> String
+expectedError :: Mutation -> (PraosValidationErr StandardCrypto -> Bool)
 expectedError = \case
-    NoMutation -> "No error"
-    MutateKESKey -> "InvalidKesSignatureOCERT"
-    MutateColdKey -> "InvalidSignatureOCERT"
-    MutateKESPeriod -> "KESBeforeStartOCERT"
+    NoMutation -> const False
+    MutateKESKey -> \case
+        InvalidKesSignatureOCERT{} -> True
+        _ -> False
+    MutateColdKey -> \case
+        InvalidSignatureOCERT{} -> True
+        _ -> False
+    MutateKESPeriod -> \case
+        KESBeforeStartOCERT{} -> True
+        _ -> False
+    MutateKESPeriodBefore -> \case
+        KESAfterEndOCERT{} -> True
+        _ -> False
 
 genMutation :: Gen Mutation
 genMutation =
@@ -181,6 +204,7 @@ genMutation =
         , (1, pure MutateKESKey)
         , (1, pure MutateColdKey)
         , (1, pure MutateKESPeriod)
+        , (1, pure MutateKESPeriodBefore)
         ]
 
 data MutatedHeader = MutatedHeader
@@ -220,6 +244,7 @@ newKESSigningKey = genKeyKES . mkSeedFromBytes
 
 data GeneratorContext = GeneratorContext
     { praosSlotsPerKESPeriod :: !Word64
+    , praosMaxKESEvo :: !Word64
     , kesSignKey :: !KESKey
     , coldSignKey :: !(SignKeyDSIGN Ed25519DSIGN)
     , vrfSignKey :: !(VRF.SignKeyVRF VRF.PraosVRF)
@@ -230,6 +255,7 @@ data GeneratorContext = GeneratorContext
 instance Eq GeneratorContext where
     a == b =
         praosSlotsPerKESPeriod a == praosSlotsPerKESPeriod b
+            && praosMaxKESEvo a == praosMaxKESEvo b
             && serialize' testVersion (kesSignKey a) == serialize' testVersion (kesSignKey b)
             && coldSignKey a == coldSignKey b
             && vrfSignKey a == vrfSignKey b
@@ -239,6 +265,7 @@ instance Json.ToJSON GeneratorContext where
     toJSON GeneratorContext{..} =
         Json.object
             [ "praosSlotsPerKESPeriod" .= praosSlotsPerKESPeriod
+            , "praosMaxKESEvo" .= praosMaxKESEvo
             , "kesSignKey" .= cborKesSignKey
             , "coldSignKey" .= cborColdSignKey
             , "vrfSignKey" .= cborVrfSignKey
@@ -253,6 +280,7 @@ instance Json.ToJSON GeneratorContext where
 instance Json.FromJSON GeneratorContext where
     parseJSON = Json.withObject "GeneratorContext" $ \obj -> do
         praosSlotsPerKESPeriod <- obj .: "praosSlotsPerKESPeriod"
+        praosMaxKESEvo <- obj .: "praosMaxKESEvo"
         cborKesSignKey <- obj .: "kesSignKey"
         cborColdSignKey <- obj .: "coldSignKey"
         cborVrfSignKey <- obj .: "vrfSignKey"
@@ -270,6 +298,7 @@ instance Json.FromJSON GeneratorContext where
 genContext :: Gen GeneratorContext
 genContext = do
     praosSlotsPerKESPeriod <- choose (100, 10000)
+    praosMaxKESEvo <- choose (10, 1000)
     kesSignKey <- newKESSigningKey <$> gen32Bytes
     coldSignKey <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
     vrfSignKey <- fst <$> newVRFSigningKey <$> gen32Bytes
@@ -332,6 +361,14 @@ genKESPeriodAfterLimit slotNo praosSlotsPerKESPeriod =
     KESPeriod . fromIntegral <$> arbitrary `suchThat` (> currentKESPeriod)
   where
     currentKESPeriod = unSlotNo slotNo `div` praosSlotsPerKESPeriod
+
+genSlotAfterKESPeriod :: Word64 -> Word64 -> Word64 -> Gen SlotNo
+genSlotAfterKESPeriod ocertKESPeriod praosMaxKESEvo praosSlotsPerKESPeriod =
+    -- kp_ < c0_ +  praosMaxKESEvo
+    -- ! =>
+    -- kp >=  c0_ +  praosMaxKESEvo
+    -- c0 <=  kp -  praosMaxKESEvo
+    SlotNo <$> arbitrary `suchThat` (> (ocertKESPeriod + praosMaxKESEvo) * praosSlotsPerKESPeriod)
 
 genHash :: Gen (Hash Blake2b_256 a)
 genHash = coerce . hash <$> gen32Bytes

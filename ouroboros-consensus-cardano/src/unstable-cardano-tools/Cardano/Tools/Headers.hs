@@ -74,7 +74,7 @@ data ValidationResult = Valid !Mutation | Invalid !Mutation !String
 validate :: GeneratorContext -> MutatedHeader -> ValidationResult
 validate context MutatedHeader{header, mutation} =
     case (runExcept $ validateKES >> validateVRF, mutation) of
-        (Left err, mut) | ctor err == expectedError mut -> Valid mut
+        (Left err, mut) | expectedError mut err -> Valid mut
         (Left err, mut) -> Invalid mut (show err)
         (Right _, NoMutation) -> Valid NoMutation
         (Right _, mut) -> Invalid mut $ "Expected error from mutation " <> show mut <> ", but validation succeeded"
