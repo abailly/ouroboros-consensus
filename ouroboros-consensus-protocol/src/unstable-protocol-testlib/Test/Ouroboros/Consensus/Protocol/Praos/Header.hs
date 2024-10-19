@@ -142,6 +142,14 @@ mutate context header mutation =
                     newBody = body{hbSlotNo = newSlotNo, hbVrfRes}
                     sig' = KES.signKES () kesPeriod newBody kesSignKey
                 pure (context, Header newBody (KES.SignedKES sig'))
+            MutateCounterOver1 -> do
+                let poolId = coerce $ hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+                    oldCounter = fromMaybe 0 $ Map.lookup poolId (ocertCounters context)
+                -- FIXME: assumes oldCounter is greater than 1, which is the case in the base generator
+                -- but is not guaranteed. If oldCounter == 0 then the mutation will fail
+                newCounter <- choose (0, oldCounter)
+                let context' = context{ocertCounters = Map.insert poolId newCounter (ocertCounters context)}
+                pure (context', header)
     GeneratorContext{praosSlotsPerKESPeriod, praosMaxKESEvo, kesSignKey, vrfSignKey, coldSignKey, nonce} = context
 
 data Mutation
@@ -156,6 +164,8 @@ data Mutation
       MutateKESPeriod
     | -- | Mutate KES period to be before the current KES period
       MutateKESPeriodBefore
+    | -- | Mutate certificate counter to be greater than expected
+      MutateCounterOver1
     deriving (Eq, Show)
 
 instance Json.ToJSON Mutation where
@@ -165,6 +175,7 @@ instance Json.ToJSON Mutation where
         MutateColdKey -> "MutateColdKey"
         MutateKESPeriod -> "MutateKESPeriod"
         MutateKESPeriodBefore -> "MutateKESPeriodBefore"
+        MutateCounterOver1 -> "MutateCounterOver1"
 
 instance Json.FromJSON Mutation where
     parseJSON = \case
@@ -173,6 +184,7 @@ instance Json.FromJSON Mutation where
         "MutateColdKey" -> pure MutateColdKey
         "MutateKESPeriod" -> pure MutateKESPeriod
         "MutateKESPeriodBefore" -> pure MutateKESPeriodBefore
+        "MutateCounterOver1" -> pure MutateCounterOver1
         _ -> fail "Invalid mutation"
 
 expectedError :: Mutation -> (PraosValidationErr StandardCrypto -> Bool)
@@ -190,6 +202,9 @@ expectedError = \case
     MutateKESPeriodBefore -> \case
         KESAfterEndOCERT{} -> True
         _ -> False
+    MutateCounterOver1 -> \case
+        CounterOverIncrementedOCERT{} -> True
+        _ -> False
 
 genMutation :: Gen Mutation
 genMutation =
@@ -199,6 +214,7 @@ genMutation =
         , (1, pure MutateColdKey)
         , (1, pure MutateKESPeriod)
         , (1, pure MutateKESPeriodBefore)
+        , (1, pure MutateCounterOver1)
         ]
 
 data MutatedHeader = MutatedHeader
@@ -296,7 +312,7 @@ genContext :: Gen GeneratorContext
 genContext = do
     praosSlotsPerKESPeriod <- choose (100, 10000)
     praosMaxKESEvo <- choose (10, 1000)
-    ocertCounter <- choose (0, 100)
+    ocertCounter <- choose (10, 100)
     kesSignKey <- newKESSigningKey <$> gen32Bytes
     coldSignKey <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
     vrfSignKey <- fst <$> newVRFSigningKey <$> gen32Bytes
