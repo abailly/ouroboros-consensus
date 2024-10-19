@@ -2,7 +2,7 @@ module GenHeader.Parsers where
 
 import Cardano.Tools.Headers (Options (..))
 import Data.Version (showVersion)
-import Options.Applicative (Parser, ParserInfo, command, execParser, helper, hsubparser, info, progDesc, (<**>))
+import Options.Applicative (Parser, ParserInfo, auto, command, execParser, help, helper, hsubparser, info, long, metavar, option, progDesc, short, (<**>))
 import Paths_ouroboros_consensus_cardano (version)
 
 parseOptions :: IO Options
@@ -30,4 +30,15 @@ validateOptionsParser :: Parser Options
 validateOptionsParser = pure Validate
 
 generateOptionsParser :: Parser Options
-generateOptionsParser = pure Generate
+generateOptionsParser =
+    Generate <$> countParser
+
+countParser :: Parser Int
+countParser =
+    option
+        auto
+        ( long "count"
+            <> short 'c'
+            <> metavar "INT"
+            <> help "Number of headers to generate"
+        )

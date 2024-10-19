@@ -43,11 +43,13 @@ import Cardano.Slotting.Block (BlockNo (..))
 import Cardano.Slotting.Slot (SlotNo (..))
 import Data.Aeson ((.:), (.=))
 import qualified Data.Aeson as Json
+import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LBS
 import Data.Coerce (coerce)
+import Data.Foldable (toList)
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Word (Word64)
 import Ouroboros.Consensus.Protocol.Praos (PraosValidationErr (..))
@@ -58,96 +60,86 @@ import Ouroboros.Consensus.Protocol.Praos.Header (
  )
 import Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF)
 import Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
-import Test.QuickCheck (Gen, arbitrary, choose, frequency, generate, getPositive, shrinkList, sized, suchThat, vectorOf)
+import Test.QuickCheck (Gen, arbitrary, choose, frequency, generate, getPositive, resize, shrinkList, sized, suchThat, vectorOf)
 
 -- * Test Vectors
 
-generateSamples :: IO Sample
-generateSamples = generate genSample
+generateSamples :: Int -> IO Sample
+generateSamples n = generate (resize n genSample)
 
 -- FIXME: Should be defined according to some Era
 testVersion :: Version
 testVersion = natVersion @MaxVersion
 
-data Sample = Sample
-    { context :: !GeneratorContext
-    , headers :: ![MutatedHeader]
-    }
+data Sample = Sample {sample :: ![(GeneratorContext, MutatedHeader)]}
     deriving (Show, Eq)
 
 instance Json.ToJSON Sample where
-    toJSON Sample{context, headers} =
-        Json.object
-            [ "context" .= context
-            , "headers" .= headers
-            ]
+    toJSON Sample{sample} = Json.toJSON sample
 
 instance Json.FromJSON Sample where
-    parseJSON = Json.withObject "Sample" $ \obj -> do
-        context <- obj .: "context"
-        headers <- obj .: "headers"
-        pure Sample{..}
+    parseJSON = Json.withArray "Sample" $ \arr -> do
+        Sample . toList <$> traverse Json.parseJSON arr
 
 genSample :: Gen Sample
 genSample = do
     context <- genContext
-    headers <- sized $ \n -> vectorOf n $ genMutatedHeader context
-    pure $ Sample{context, headers}
+    sample <- sized $ \n -> vectorOf n $ genMutatedHeader context
+    pure $ Sample{sample}
 
-genMutatedHeader :: GeneratorContext -> Gen MutatedHeader
+genMutatedHeader :: GeneratorContext -> Gen (GeneratorContext, MutatedHeader)
 genMutatedHeader context = do
     mutation <- genMutation
     header <- genHeader context
-    mutated <- mutate context header mutation
-    pure $ MutatedHeader{header = mutated, mutation}
+    mutate context header mutation
 
 shrinkSample :: Sample -> [Sample]
-shrinkSample Sample{context, headers} =
-    [ Sample{context, headers = headers'}
-    | headers' <- shrinkList (const []) headers
-    ]
+shrinkSample Sample{sample} = Sample <$> shrinkList (const []) sample
 
-mutate :: GeneratorContext -> Header StandardCrypto -> Mutation -> Gen (Header StandardCrypto)
-mutate context header = \case
-    NoMutation -> pure header
-    MutateKESKey -> do
-        let Header body _ = header
-        newKESSignKey <- newKESSigningKey <$> gen32Bytes
-        KESPeriod kesPeriod <- genValidKESPeriod (hbSlotNo body) praosSlotsPerKESPeriod
-        let sig' = KES.signKES () kesPeriod body newKESSignKey
-        pure $ Header body (KES.SignedKES sig')
-    MutateColdKey -> do
-        let Header body _ = header
-        newColdSignKey <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
-        (hbOCert, KESPeriod kesPeriod) <- genCert (hbSlotNo body) context{coldSignKey = newColdSignKey}
-        let newBody = body{hbOCert}
-        let sig' = KES.signKES () kesPeriod newBody kesSignKey
-        pure $ Header newBody (KES.SignedKES sig')
-    MutateKESPeriod -> do
-        let Header body _ = header
-        KESPeriod kesPeriod' <- genKESPeriodAfterLimit (hbSlotNo body) praosSlotsPerKESPeriod
-        let newKESPeriod = KESPeriod kesPeriod'
-        let oldOCert@OCert{ocertVkHot, ocertN} = hbOCert body
-        let newBody =
-                body
-                    { hbOCert =
-                        oldOCert
-                            { ocertKESPeriod = newKESPeriod
-                            , ocertSigma = signedDSIGN @StandardCrypto coldSignKey (OCertSignable ocertVkHot ocertN newKESPeriod)
-                            }
-                    }
-        let sig' = KES.signKES () kesPeriod' newBody kesSignKey
-        pure $ Header newBody (KES.SignedKES sig')
-    MutateKESPeriodBefore -> do
-        let Header body _ = header
-        let OCert{ocertKESPeriod = KESPeriod kesPeriod} = hbOCert body
-        newSlotNo <- genSlotAfterKESPeriod (fromIntegral kesPeriod) praosMaxKESEvo praosSlotsPerKESPeriod
-        let rho' = mkInputVRF newSlotNo nonce
-            hbVrfRes = VRF.evalCertified () rho' vrfSignKey
-            newBody = body{hbSlotNo = newSlotNo, hbVrfRes}
-            sig' = KES.signKES () kesPeriod newBody kesSignKey
-        pure $ Header newBody (KES.SignedKES sig')
+mutate :: GeneratorContext -> Header StandardCrypto -> Mutation -> Gen (GeneratorContext, MutatedHeader)
+mutate context header mutation =
+    second (\h -> MutatedHeader{header = h, mutation}) <$> mutated
   where
+    mutated =
+        case mutation of
+            NoMutation -> pure (context, header)
+            MutateKESKey -> do
+                let Header body _ = header
+                newKESSignKey <- newKESSigningKey <$> gen32Bytes
+                KESPeriod kesPeriod <- genValidKESPeriod (hbSlotNo body) praosSlotsPerKESPeriod
+                let sig' = KES.signKES () kesPeriod body newKESSignKey
+                pure (context, Header body (KES.SignedKES sig'))
+            MutateColdKey -> do
+                let Header body _ = header
+                newColdSignKey <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
+                (hbOCert, KESPeriod kesPeriod) <- genCert (hbSlotNo body) context{coldSignKey = newColdSignKey}
+                let newBody = body{hbOCert}
+                let sig' = KES.signKES () kesPeriod newBody kesSignKey
+                pure (context, Header newBody (KES.SignedKES sig'))
+            MutateKESPeriod -> do
+                let Header body _ = header
+                KESPeriod kesPeriod' <- genKESPeriodAfterLimit (hbSlotNo body) praosSlotsPerKESPeriod
+                let newKESPeriod = KESPeriod kesPeriod'
+                let oldOCert@OCert{ocertVkHot, ocertN} = hbOCert body
+                let newBody =
+                        body
+                            { hbOCert =
+                                oldOCert
+                                    { ocertKESPeriod = newKESPeriod
+                                    , ocertSigma = signedDSIGN @StandardCrypto coldSignKey (OCertSignable ocertVkHot ocertN newKESPeriod)
+                                    }
+                            }
+                let sig' = KES.signKES () kesPeriod' newBody kesSignKey
+                pure (context, Header newBody (KES.SignedKES sig'))
+            MutateKESPeriodBefore -> do
+                let Header body _ = header
+                let OCert{ocertKESPeriod = KESPeriod kesPeriod} = hbOCert body
+                newSlotNo <- genSlotAfterKESPeriod (fromIntegral kesPeriod) praosMaxKESEvo praosSlotsPerKESPeriod
+                let rho' = mkInputVRF newSlotNo nonce
+                    hbVrfRes = VRF.evalCertified () rho' vrfSignKey
+                    newBody = body{hbSlotNo = newSlotNo, hbVrfRes}
+                    sig' = KES.signKES () kesPeriod newBody kesSignKey
+                pure (context, Header newBody (KES.SignedKES sig'))
     GeneratorContext{praosSlotsPerKESPeriod, praosMaxKESEvo, kesSignKey, vrfSignKey, coldSignKey, nonce} = context
 
 data Mutation

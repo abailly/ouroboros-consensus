@@ -51,19 +51,19 @@ type ConwayBlock = ShelleyBlock (Praos StandardCrypto) (ConwayEra StandardCrypto
 
 -- * Running Generator
 data Options
-    = Generate
+    = Generate Int
     | Validate
 
 run :: Options -> IO ()
 run = \case
-    Generate -> do
-        sample <- generateSamples
+    Generate n -> do
+        sample <- generateSamples n
         LBS.putStr $ Json.encode sample <> "\n"
     Validate ->
         Json.eitherDecode <$> LBS.getContents >>= \case
             Left err -> hPutStrLn stderr err >> exitWith (ExitFailure 1)
-            Right Sample{context, headers} ->
-                forM_ headers $ \mutatedHeader -> do
+            Right Sample{sample} ->
+                forM_ sample $ \(context, mutatedHeader) -> do
                     print $ validate context mutatedHeader
 
 data ValidationResult = Valid !Mutation | Invalid !Mutation !String
