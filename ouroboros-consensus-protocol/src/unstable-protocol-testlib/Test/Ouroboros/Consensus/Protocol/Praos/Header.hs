@@ -11,15 +11,16 @@
 module Test.Ouroboros.Consensus.Protocol.Praos.Header where
 
 import Cardano.Crypto.DSIGN (
-    DSIGNAlgorithm (SignKeyDSIGN, genKeyDSIGN),
+    DSIGNAlgorithm (SignKeyDSIGN, genKeyDSIGN, rawSerialiseSignKeyDSIGN),
     Ed25519DSIGN,
     deriveVerKeyDSIGN,
+    rawDeserialiseSignKeyDSIGN,
  )
-import Cardano.Crypto.Hash (Blake2b_256, Hash, hash)
+import Cardano.Crypto.Hash (Blake2b_256, Hash, hash, hashFromBytes, hashToBytes)
 import qualified Cardano.Crypto.KES as KES
-import Cardano.Crypto.KES.Class (genKeyKES)
+import Cardano.Crypto.KES.Class (genKeyKES, rawDeserialiseSignKeyKES, rawSerialiseSignKeyKES)
 import Cardano.Crypto.Seed (mkSeedFromBytes)
-import Cardano.Crypto.VRF (deriveVerKeyVRF)
+import Cardano.Crypto.VRF (deriveVerKeyVRF, rawDeserialiseSignKeyVRF, rawSerialiseSignKeyVRF)
 import qualified Cardano.Crypto.VRF as VRF
 import qualified Cardano.Crypto.VRF.Praos as VRF
 import Cardano.Ledger.BaseTypes (
@@ -291,36 +292,60 @@ instance Json.ToJSON GeneratorContext where
         Json.object
             [ "praosSlotsPerKESPeriod" .= praosSlotsPerKESPeriod
             , "praosMaxKESEvo" .= praosMaxKESEvo
-            , "kesSignKey" .= cborKesSignKey
-            , "coldSignKey" .= cborColdSignKey
-            , "vrfSignKey" .= cborVrfSignKey
-            , "nonce" .= cborNonce
+            , "kesSignKey" .= rawKesSignKey
+            , "coldSignKey" .= rawColdSignKey
+            , "vrfSignKey" .= rawVrfSignKey
+            , "nonce" .= rawNonce
             , "ocertCounters" .= ocertCounters
             ]
       where
-        cborKesSignKey = decodeUtf8 . Base64.encode $ serialize' testVersion kesSignKey
-        cborColdSignKey = decodeUtf8 . Base64.encode $ serialize' testVersion coldSignKey
-        cborVrfSignKey = decodeUtf8 . Base64.encode $ serialize' testVersion vrfSignKey
-        cborNonce = decodeUtf8 . Base64.encode $ serialize' testVersion nonce
+        rawKesSignKey = decodeUtf8 . Base64.encode $ rawSerialiseSignKeyKES kesSignKey
+        rawColdSignKey = decodeUtf8 . Base64.encode $ rawSerialiseSignKeyDSIGN coldSignKey
+        rawVrfSignKey = decodeUtf8 . Base64.encode $ rawSerialiseSignKeyVRF vrfSignKey
+        rawNonce = case nonce of
+            NeutralNonce -> decodeUtf8 . Base64.encode $ BS.replicate 32 0
+            Nonce hashNonce -> decodeUtf8 . Base64.encode $ hashToBytes hashNonce
 
 instance Json.FromJSON GeneratorContext where
     parseJSON = Json.withObject "GeneratorContext" $ \obj -> do
         praosSlotsPerKESPeriod <- obj .: "praosSlotsPerKESPeriod"
         praosMaxKESEvo <- obj .: "praosMaxKESEvo"
-        cborKesSignKey <- obj .: "kesSignKey"
-        cborColdSignKey <- obj .: "coldSignKey"
-        cborVrfSignKey <- obj .: "vrfSignKey"
+        rawKesSignKey <- obj .: "kesSignKey"
+        rawColdSignKey <- obj .: "coldSignKey"
+        rawVrfSignKey <- obj .: "vrfSignKey"
         cborNonce <- obj .: "nonce"
         ocertCounters <- obj .: "ocertCounters"
-        kesSignKey <- parseKey cborKesSignKey
-        coldSignKey <- parseKey cborColdSignKey
-        vrfSignKey <- parseKey cborVrfSignKey
-        nonce <- parseKey cborNonce
+        kesSignKey <- parseKesSignKey rawKesSignKey
+        coldSignKey <- parseColdSignKey rawColdSignKey
+        vrfSignKey <- parseVrfSignKey rawVrfSignKey
+        nonce <- parseNonce cborNonce
         pure GeneratorContext{..}
       where
-        parseKey cborKey = do
-            let keyBytes = Base64.decodeLenient (encodeUtf8 cborKey)
-            either (fail . show) pure $ decodeFull' testVersion keyBytes
+        parseNonce rawNonce =
+            case Base64.decode (encodeUtf8 rawNonce) of
+                Left _ -> pure NeutralNonce
+                Right nonceBytes -> Nonce <$> maybe (fail "invalid bytes for hash") pure (hashFromBytes nonceBytes)
+        parseColdSignKey rawKey = do
+            case Base64.decode (encodeUtf8 rawKey) of
+                Left err -> fail err
+                Right keyBytes ->
+                    case rawDeserialiseSignKeyDSIGN keyBytes of
+                        Nothing -> fail $ "Invalid cold key bytes: " <> show rawKey
+                        Just key -> pure key
+        parseKesSignKey rawKey = do
+            case Base64.decode (encodeUtf8 rawKey) of
+                Left err -> fail err
+                Right keyBytes ->
+                    case rawDeserialiseSignKeyKES keyBytes of
+                        Nothing -> fail $ "Invalid KES key bytes: " <> show rawKey
+                        Just key -> pure key
+        parseVrfSignKey rawKey = do
+            case Base64.decode (encodeUtf8 rawKey) of
+                Left err -> fail err
+                Right keyBytes ->
+                    case rawDeserialiseSignKeyVRF keyBytes of
+                        Nothing -> fail $ "Invalid VRF key bytes: " <> show rawKey
+                        Just key -> pure key
 
 genContext :: Gen GeneratorContext
 genContext = do
