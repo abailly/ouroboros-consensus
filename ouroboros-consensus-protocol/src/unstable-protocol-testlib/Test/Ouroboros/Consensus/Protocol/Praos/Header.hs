@@ -20,8 +20,9 @@ import Cardano.Crypto.Hash (Blake2b_256, Hash, hash, hashFromBytes, hashToBytes)
 import qualified Cardano.Crypto.KES as KES
 import Cardano.Crypto.KES.Class (genKeyKES, rawDeserialiseSignKeyKES, rawSerialiseSignKeyKES)
 import Cardano.Crypto.Seed (mkSeedFromBytes)
-import Cardano.Crypto.VRF (deriveVerKeyVRF, rawDeserialiseSignKeyVRF, rawSerialiseSignKeyVRF)
+import Cardano.Crypto.VRF (deriveVerKeyVRF, hashVerKeyVRF, rawDeserialiseSignKeyVRF, rawSerialiseSignKeyVRF)
 import qualified Cardano.Crypto.VRF as VRF
+import Cardano.Crypto.VRF.Praos (skToBatchCompat)
 import qualified Cardano.Crypto.VRF.Praos as VRF
 import Cardano.Ledger.BaseTypes (
     Nonce (..),
@@ -47,7 +48,7 @@ import qualified Data.Aeson as Json
 import Data.Bifunctor (second)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Base16 as Base16
 import qualified Data.ByteString.Lazy as LBS
 import Data.Coerce (coerce)
 import Data.Foldable (toList)
@@ -245,7 +246,7 @@ instance Json.ToJSON MutatedHeader where
             , "mutation" .= mutation
             ]
       where
-        cborHeader = decodeUtf8 . Base64.encode $ serialize' testVersion header
+        cborHeader = decodeUtf8 . Base16.encode $ serialize' testVersion header
 
 instance Json.FromJSON MutatedHeader where
     parseJSON = Json.withObject "MutatedHeader" $ \obj -> do
@@ -255,7 +256,7 @@ instance Json.FromJSON MutatedHeader where
         pure MutatedHeader{header, mutation}
       where
         parseHeader cborHeader = do
-            let headerBytes = Base64.decodeLenient (encodeUtf8 cborHeader)
+            let headerBytes = Base16.decodeLenient (encodeUtf8 cborHeader)
             either (fail . show) pure $ decodeFullAnnotator @(Header StandardCrypto) testVersion "Header" decCBOR $ LBS.fromStrict headerBytes
 
 -- * Generators
@@ -295,16 +296,18 @@ instance Json.ToJSON GeneratorContext where
             , "kesSignKey" .= rawKesSignKey
             , "coldSignKey" .= rawColdSignKey
             , "vrfSignKey" .= rawVrfSignKey
+            , "vrfVKeyHash" .= rawVrVKeyHash
             , "nonce" .= rawNonce
             , "ocertCounters" .= ocertCounters
             ]
       where
-        rawKesSignKey = decodeUtf8 . Base64.encode $ rawSerialiseSignKeyKES kesSignKey
-        rawColdSignKey = decodeUtf8 . Base64.encode $ rawSerialiseSignKeyDSIGN coldSignKey
-        rawVrfSignKey = decodeUtf8 . Base64.encode $ rawSerialiseSignKeyVRF vrfSignKey
+        rawKesSignKey = decodeUtf8 . Base16.encode $ rawSerialiseSignKeyKES kesSignKey
+        rawColdSignKey = decodeUtf8 . Base16.encode $ rawSerialiseSignKeyDSIGN coldSignKey
+        rawVrfSignKey = decodeUtf8 . Base16.encode $ rawSerialiseSignKeyVRF $ skToBatchCompat vrfSignKey
+        rawVrVKeyHash = decodeUtf8 . Base16.encode $ hashToBytes $ hashVerKeyVRF @_ @Blake2b_256 $ deriveVerKeyVRF vrfSignKey
         rawNonce = case nonce of
-            NeutralNonce -> decodeUtf8 . Base64.encode $ BS.replicate 32 0
-            Nonce hashNonce -> decodeUtf8 . Base64.encode $ hashToBytes hashNonce
+            NeutralNonce -> decodeUtf8 . Base16.encode $ BS.replicate 32 0
+            Nonce hashNonce -> decodeUtf8 . Base16.encode $ hashToBytes hashNonce
 
 instance Json.FromJSON GeneratorContext where
     parseJSON = Json.withObject "GeneratorContext" $ \obj -> do
@@ -322,25 +325,25 @@ instance Json.FromJSON GeneratorContext where
         pure GeneratorContext{..}
       where
         parseNonce rawNonce =
-            case Base64.decode (encodeUtf8 rawNonce) of
+            case Base16.decode (encodeUtf8 rawNonce) of
                 Left _ -> pure NeutralNonce
                 Right nonceBytes -> Nonce <$> maybe (fail "invalid bytes for hash") pure (hashFromBytes nonceBytes)
         parseColdSignKey rawKey = do
-            case Base64.decode (encodeUtf8 rawKey) of
+            case Base16.decode (encodeUtf8 rawKey) of
                 Left err -> fail err
                 Right keyBytes ->
                     case rawDeserialiseSignKeyDSIGN keyBytes of
                         Nothing -> fail $ "Invalid cold key bytes: " <> show rawKey
                         Just key -> pure key
         parseKesSignKey rawKey = do
-            case Base64.decode (encodeUtf8 rawKey) of
+            case Base16.decode (encodeUtf8 rawKey) of
                 Left err -> fail err
                 Right keyBytes ->
                     case rawDeserialiseSignKeyKES keyBytes of
                         Nothing -> fail $ "Invalid KES key bytes: " <> show rawKey
                         Just key -> pure key
         parseVrfSignKey rawKey = do
-            case Base64.decode (encodeUtf8 rawKey) of
+            case Base16.decode (encodeUtf8 rawKey) of
                 Left err -> fail err
                 Right keyBytes ->
                     case rawDeserialiseSignKeyVRF keyBytes of

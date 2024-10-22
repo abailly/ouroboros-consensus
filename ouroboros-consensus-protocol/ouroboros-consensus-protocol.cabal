@@ -91,7 +91,7 @@ library unstable-protocol-testlib
     QuickCheck,
     aeson,
     base,
-    base64-bytestring,
+    base16-bytestring,
     bytestring,
     cardano-crypto-class,
     cardano-crypto-praos,
