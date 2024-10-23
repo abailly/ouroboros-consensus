@@ -80,11 +80,10 @@ validate context MutatedHeader{header, mutation} =
         (Right _, NoMutation) -> Valid NoMutation
         (Right _, mut) -> Invalid mut $ "Expected error from mutation " <> show mut <> ", but validation succeeded"
   where
-    GeneratorContext{praosSlotsPerKESPeriod, nonce, coldSignKey, vrfSignKey, ocertCounters} = context
+    GeneratorContext{praosSlotsPerKESPeriod, nonce, coldSignKey, vrfSignKey, ocertCounters, activeSlotCoeff} = context
     -- TODO: get these from the context
-    maxKESEvo = 63
+    maxKESEvo = 62
     coin = fromJust . toCompact . Coin
-    slotCoeff = mkActiveSlotCoeff $ fromJust $ boundRational @PositiveUnitInterval $ 1
     ownsAllStake vrfKey = IndividualPoolStake 1 (coin 1) vrfKey
     poolDistr = Map.fromList [(poolId, ownsAllStake hashVRFKey)]
     poolId = hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
@@ -92,4 +91,4 @@ validate context MutatedHeader{header, mutation} =
 
     headerView = validateView @ConwayBlock undefined (mkShelleyHeader header)
     validateKES = doValidateKESSignature maxKESEvo praosSlotsPerKESPeriod poolDistr ocertCounters headerView
-    validateVRF = doValidateVRFSignature nonce poolDistr slotCoeff headerView
+    validateVRF = doValidateVRFSignature nonce poolDistr activeSlotCoeff headerView

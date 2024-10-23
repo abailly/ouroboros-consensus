@@ -25,9 +25,15 @@ import qualified Cardano.Crypto.VRF as VRF
 import Cardano.Crypto.VRF.Praos (skToBatchCompat)
 import qualified Cardano.Crypto.VRF.Praos as VRF
 import Cardano.Ledger.BaseTypes (
+    ActiveSlotCoeff,
+    Globals (activeSlotCoeff),
     Nonce (..),
+    PositiveUnitInterval,
     ProtVer (..),
     Version,
+    activeSlotVal,
+    boundRational,
+    mkActiveSlotCoeff,
     natVersion,
  )
 import Cardano.Ledger.Binary (MaxVersion, decCBOR, decodeFull', decodeFullAnnotator, serialize')
@@ -35,6 +41,7 @@ import Cardano.Ledger.Keys (KeyHash, KeyRole (BlockIssuer), VKey (..), hashKey, 
 import Cardano.Protocol.TPraos.BHeader (
     HashHeader (..),
     PrevHash (..),
+    checkLeaderNatValue,
  )
 import Cardano.Protocol.TPraos.OCert (
     KESPeriod (..),
@@ -53,7 +60,9 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Coerce (coerce)
 import Data.Foldable (toList)
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromJust, fromMaybe)
+import Data.Proxy (Proxy (..))
+import Data.Ratio ((%))
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Word (Word64)
 import Ouroboros.Consensus.Protocol.Praos (PraosValidationErr (..))
@@ -62,7 +71,7 @@ import Ouroboros.Consensus.Protocol.Praos.Header (
     HeaderBody (..),
     pattern Header,
  )
-import Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF)
+import Ouroboros.Consensus.Protocol.Praos.VRF (InputVRF, mkInputVRF, vrfLeaderValue)
 import Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
 import Test.QuickCheck (Gen, arbitrary, choose, frequency, generate, getPositive, resize, shrinkList, sized, suchThat, vectorOf)
 
@@ -276,6 +285,7 @@ data GeneratorContext = GeneratorContext
     , vrfSignKey :: !(VRF.SignKeyVRF VRF.PraosVRF)
     , nonce :: !Nonce
     , ocertCounters :: !(Map.Map (KeyHash BlockIssuer StandardCrypto) Word64)
+    , activeSlotCoeff :: !ActiveSlotCoeff
     }
     deriving (Show)
 
@@ -299,6 +309,7 @@ instance Json.ToJSON GeneratorContext where
             , "vrfVKeyHash" .= rawVrVKeyHash
             , "nonce" .= rawNonce
             , "ocertCounters" .= ocertCounters
+            , "activeSlotCoeff" .= activeSlotVal activeSlotCoeff
             ]
       where
         rawKesSignKey = decodeUtf8 . Base16.encode $ rawSerialiseSignKeyKES kesSignKey
@@ -322,6 +333,7 @@ instance Json.FromJSON GeneratorContext where
         coldSignKey <- parseColdSignKey rawColdSignKey
         vrfSignKey <- parseVrfSignKey rawVrfSignKey
         nonce <- parseNonce cborNonce
+        activeSlotCoeff <- mkActiveSlotCoeff <$> obj .: "activeSlotCoeff"
         pure GeneratorContext{..}
       where
         parseNonce rawNonce =
@@ -361,7 +373,14 @@ genContext = do
     nonce <- Nonce <$> genHash
     let poolId = coerce $ hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
         ocertCounters = Map.fromList [(poolId, ocertCounter)]
+    activeSlotCoeff <- genActiveSlotCoeff
     pure $ GeneratorContext{..}
+
+genActiveSlotCoeff :: Gen ActiveSlotCoeff
+genActiveSlotCoeff = do
+    choose (1, 100) >>= \n -> pure $ activeSlotCoeff (n % 100)
+  where
+    activeSlotCoeff = mkActiveSlotCoeff . fromJust . boundRational @PositiveUnitInterval
 
 {- | Generate a well-formed header
 
@@ -379,12 +398,9 @@ genHeader context = do
 genHeaderBody :: GeneratorContext -> Gen (HeaderBody StandardCrypto, KESPeriod)
 genHeaderBody context = do
     hbBlockNo <- BlockNo <$> arbitrary
-    hbSlotNo <- SlotNo . getPositive <$> arbitrary
+    (hbSlotNo, hbVrfRes, hbVrfVk) <- genLeadingSlot context
     hbPrev <- BlockHash . HashHeader <$> genHash
     let hbVk = VKey $ deriveVerKeyDSIGN coldSignKey
-    let rho' = mkInputVRF hbSlotNo nonce
-        hbVrfRes = VRF.evalCertified () rho' vrfSignKey
-        hbVrfVk = deriveVerKeyVRF vrfSignKey
     hbBodySize <- choose (1000, 90000)
     hbBodyHash <- genHash
     (hbOCert, kesPeriod) <- genCert hbSlotNo context
@@ -392,7 +408,23 @@ genHeaderBody context = do
         headerBody = HeaderBody{..}
     pure $ (headerBody, kesPeriod)
   where
-    GeneratorContext{coldSignKey, vrfSignKey, nonce} = context
+    GeneratorContext{coldSignKey} = context
+
+genLeadingSlot :: GeneratorContext -> Gen (SlotNo, VRF.CertifiedVRF VRF.PraosVRF InputVRF, VRF.VerKeyVRF VRF.PraosVRF)
+genLeadingSlot context = do
+    slotNo <- SlotNo . getPositive <$> arbitrary `suchThat` isLeader
+    let rho' = mkInputVRF slotNo nonce
+        hbVrfRes = VRF.evalCertified () rho' vrfSignKey
+        hbVrfVk = deriveVerKeyVRF vrfSignKey
+    pure (slotNo, hbVrfRes, hbVrfVk)
+  where
+    isLeader n =
+        let slotNo = SlotNo . getPositive $ n
+            rho' = mkInputVRF slotNo nonce
+            certified = VRF.evalCertified () rho' vrfSignKey
+         in checkLeaderNatValue (vrfLeaderValue (Proxy @StandardCrypto) certified) sigma activeSlotCoeff
+    sigma = 1
+    GeneratorContext{vrfSignKey, nonce, activeSlotCoeff} = context
 
 protocolVersionZero :: ProtVer
 protocolVersionZero = ProtVer versionZero 0
