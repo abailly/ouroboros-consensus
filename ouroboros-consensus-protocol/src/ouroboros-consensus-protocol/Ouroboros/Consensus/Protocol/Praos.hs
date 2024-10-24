@@ -801,6 +801,7 @@ instance
   Util
 -------------------------------------------------------------------------------}
 
+-- | Check value and raise error if it is false.
 (?!) :: Bool -> e -> Except e ()
 a ?! b = unless a $ throwError b
 
