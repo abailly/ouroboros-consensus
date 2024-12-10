@@ -9,69 +9,133 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Test.Ouroboros.Consensus.Protocol.Praos.Header (
-    GeneratorContext (..)
-  , MutatedHeader (..)
-  , Mutation (..)
-  , Sample (..)
-  , expectedError
-  , genContext
-  , genMutatedHeader
-  , genSample
-  , generateSamples
-  ) where
+    GeneratorContext (..),
+    MutatedHeader (..),
+    Mutation (..),
+    Sample (..),
+    expectedError,
+    genContext,
+    genMutatedHeader,
+    genSample,
+    generateSamples,
 
-import           Cardano.Crypto.DSIGN
-                     (DSIGNAlgorithm (SignKeyDSIGN, genKeyDSIGN, rawSerialiseSignKeyDSIGN),
-                     Ed25519DSIGN, deriveVerKeyDSIGN,
-                     rawDeserialiseSignKeyDSIGN)
-import           Cardano.Crypto.Hash (Blake2b_256, Hash, hashFromBytes,
-                     hashToBytes, hashWith)
+    -- * Exported utilities
+    KESKey,
+    newKESSigningKey,
+    newVRFSigningKey,
+    PoolId,
+    mkPoolId,
+    gen32Bytes,
+    genHash,
+    protocolVersionZero,
+    testVersion,
+) where
+
+import Cardano.Crypto.DSIGN (
+    DSIGNAlgorithm (SignKeyDSIGN, genKeyDSIGN, rawSerialiseSignKeyDSIGN),
+    Ed25519DSIGN,
+    deriveVerKeyDSIGN,
+    rawDeserialiseSignKeyDSIGN,
+ )
+import Cardano.Crypto.Hash (
+    Blake2b_256,
+    Hash,
+    hashFromBytes,
+    hashToBytes,
+    hashWith,
+ )
 import qualified Cardano.Crypto.KES as KES
-import           Cardano.Crypto.KES.Class (genKeyKES, rawDeserialiseSignKeyKES,
-                     rawSerialiseSignKeyKES)
-import           Cardano.Crypto.Seed (mkSeedFromBytes)
-import           Cardano.Crypto.VRF (deriveVerKeyVRF, hashVerKeyVRF,
-                     rawDeserialiseSignKeyVRF, rawSerialiseSignKeyVRF)
+import Cardano.Crypto.KES.Class (
+    genKeyKES,
+    rawDeserialiseSignKeyKES,
+    rawSerialiseSignKeyKES,
+ )
+import Cardano.Crypto.Seed (mkSeedFromBytes)
+import Cardano.Crypto.VRF (
+    deriveVerKeyVRF,
+    hashVerKeyVRF,
+    rawDeserialiseSignKeyVRF,
+    rawSerialiseSignKeyVRF,
+ )
 import qualified Cardano.Crypto.VRF as VRF
-import           Cardano.Crypto.VRF.Praos (skToBatchCompat)
+import Cardano.Crypto.VRF.Praos (skToBatchCompat)
 import qualified Cardano.Crypto.VRF.Praos as VRF
-import           Cardano.Ledger.BaseTypes (ActiveSlotCoeff, Nonce (..),
-                     PositiveUnitInterval, ProtVer (..), Version, activeSlotVal,
-                     boundRational, mkActiveSlotCoeff, natVersion)
-import           Cardano.Ledger.Binary (MaxVersion, decCBOR,
-                     decodeFullAnnotator, serialize')
-import           Cardano.Ledger.Keys (KeyHash, KeyRole (BlockIssuer), VKey (..),
-                     hashKey, signedDSIGN)
-import           Cardano.Protocol.TPraos.BHeader (HashHeader (..),
-                     PrevHash (..), checkLeaderNatValue)
-import           Cardano.Protocol.TPraos.OCert (KESPeriod (..), OCert (..),
-                     OCertSignable (..))
-import           Cardano.Slotting.Block (BlockNo (..))
-import           Cardano.Slotting.Slot (SlotNo (..))
-import           Data.Aeson (defaultOptions, (.:), (.=))
+import Cardano.Ledger.BaseTypes (
+    ActiveSlotCoeff,
+    Nonce (..),
+    PositiveUnitInterval,
+    ProtVer (..),
+    Version,
+    activeSlotVal,
+    boundRational,
+    mkActiveSlotCoeff,
+    natVersion,
+ )
+import Cardano.Ledger.Binary (
+    MaxVersion,
+    decCBOR,
+    decodeFullAnnotator,
+    serialize',
+ )
+import Cardano.Ledger.Keys (
+    KeyHash,
+    KeyRole (BlockIssuer),
+    VKey (..),
+    hashKey,
+    signedDSIGN,
+ )
+import Cardano.Protocol.TPraos.BHeader (
+    HashHeader (..),
+    PrevHash (..),
+    checkLeaderNatValue,
+ )
+import Cardano.Protocol.TPraos.OCert (
+    KESPeriod (..),
+    OCert (..),
+    OCertSignable (..),
+ )
+import Cardano.Slotting.Block (BlockNo (..))
+import Cardano.Slotting.Slot (SlotNo (..))
+import Data.Aeson (defaultOptions, (.:), (.=))
 import qualified Data.Aeson as Json
-import           Data.Bifunctor (second)
-import           Data.ByteString (ByteString)
+import Data.Bifunctor (second)
+import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as Base16
 import qualified Data.ByteString.Lazy as LBS
-import           Data.Coerce (coerce)
-import           Data.Foldable (toList)
+import Data.Coerce (coerce)
+import Data.Foldable (toList)
 import qualified Data.Map as Map
-import           Data.Maybe (fromJust, fromMaybe)
-import           Data.Proxy (Proxy (..))
-import           Data.Ratio ((%))
-import           Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import           Data.Word (Word64)
-import           GHC.Generics (Generic)
-import           Ouroboros.Consensus.Protocol.Praos (PraosValidationErr (..))
-import           Ouroboros.Consensus.Protocol.Praos.Header (Header,
-                     HeaderBody (..), pattern Header)
-import           Ouroboros.Consensus.Protocol.Praos.VRF (InputVRF, mkInputVRF,
-                     vrfLeaderValue)
-import           Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
-import           Test.QuickCheck (Gen, arbitrary, choose, frequency, generate,
-                     getPositive, resize, sized, suchThat, vectorOf)
+import Data.Maybe (fromJust, fromMaybe)
+import Data.Proxy (Proxy (..))
+import Data.Ratio ((%))
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
+import Data.Word (Word64)
+import GHC.Generics (Generic)
+import Ouroboros.Consensus.Protocol.Praos (PraosValidationErr (..))
+import Ouroboros.Consensus.Protocol.Praos.Header (
+    Header,
+    HeaderBody (..),
+    pattern Header,
+ )
+import Ouroboros.Consensus.Protocol.Praos.VRF (
+    InputVRF,
+    mkInputVRF,
+    vrfLeaderValue,
+ )
+import Ouroboros.Consensus.Protocol.TPraos (StandardCrypto)
+import Test.QuickCheck (
+    Gen,
+    arbitrary,
+    choose,
+    frequency,
+    generate,
+    getPositive,
+    resize,
+    sized,
+    suchThat,
+    vectorOf,
+ )
 
 -- * Test Vectors
 
@@ -150,14 +214,14 @@ mutate context header mutation =
                     sig' = KES.signKES () (fromIntegral period' - kesPeriod) newBody kesSignKey
                 pure (context, Header newBody (KES.SignedKES sig'))
             MutateCounterOver1 -> do
-                let poolId = coerce $ hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+                let poolId = mkPoolId coldSignKey
                     Header body _ = header
                     OCert{ocertN} = hbOCert body
                 newCounter <- choose (0, ocertN - 2)
                 let context' = context{ocertCounters = Map.insert poolId newCounter (ocertCounters context)}
                 pure (context', header)
             MutateCounterUnder -> do
-                let poolId = coerce $ hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+                let poolId = mkPoolId coldSignKey
                     oldCounter = fromMaybe 0 $ Map.lookup poolId (ocertCounters context)
                 newCounter <- arbitrary `suchThat` (> oldCounter)
                 let context' = context{ocertCounters = Map.insert poolId newCounter (ocertCounters context)}
@@ -229,7 +293,7 @@ genMutation header =
             else []
 
 data MutatedHeader = MutatedHeader
-    { header   :: !(Header StandardCrypto)
+    { header :: !(Header StandardCrypto)
     , mutation :: !Mutation
     }
     deriving (Show, Eq)
@@ -357,10 +421,15 @@ genContext = do
     coldSignKey <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
     vrfSignKey <- fst <$> newVRFSigningKey <$> gen32Bytes
     nonce <- Nonce <$> genHash
-    let poolId = coerce $ hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+    let poolId = mkPoolId coldSignKey
         ocertCounters = Map.fromList [(poolId, ocertCounter)]
     activeSlotCoeff <- genActiveSlotCoeff
     pure $ GeneratorContext{..}
+
+type PoolId = KeyHash BlockIssuer StandardCrypto
+
+mkPoolId :: SignKeyDSIGN Ed25519DSIGN -> PoolId
+mkPoolId = coerce . hashKey . VKey . deriveVerKeyDSIGN
 
 genActiveSlotCoeff :: Gen ActiveSlotCoeff
 genActiveSlotCoeff = do
@@ -421,7 +490,7 @@ protocolVersionZero = ProtVer versionZero 0
 genCert :: SlotNo -> GeneratorContext -> Gen (OCert StandardCrypto, KESPeriod)
 genCert slotNo context = do
     let ocertVkHot = KES.deriveVerKeyKES kesSignKey
-        poolId = coerce $ hashKey $ VKey $ deriveVerKeyDSIGN coldSignKey
+        poolId = mkPoolId coldSignKey
         ocertN = fromMaybe 0 $ Map.lookup poolId ocertCounters
     ocertKESPeriod <- genValidKESPeriod slotNo praosSlotsPerKESPeriod
     let ocertSigma = signedDSIGN @StandardCrypto coldSignKey (OCertSignable ocertVkHot ocertN ocertKESPeriod)
