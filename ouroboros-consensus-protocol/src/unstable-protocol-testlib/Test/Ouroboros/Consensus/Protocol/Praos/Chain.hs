@@ -1,3 +1,4 @@
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
@@ -32,8 +33,10 @@ import qualified Data.ByteString.Base16 as Base16
 import Data.Data (Proxy (..))
 import Data.Foldable (maximumBy)
 import Data.Function (on)
-import Data.Maybe (fromJust)
+import qualified Data.IntMap as Map
+import Data.Maybe (fromJust, mapMaybe)
 import Data.Ratio ((%))
+import qualified Data.Set as Set
 import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8)
 import Data.Word (Word64)
@@ -65,7 +68,15 @@ data Chain
     | Tip {header :: !(Header StandardCrypto), height :: !BlockNo, parent :: !Chain}
     deriving (Eq, Show)
 
-newtype Chains = Chains [Chain]
+instance Ord Chain where
+    compare :: Chain -> Chain -> Ordering
+    compare Genesis Genesis = EQ
+    compare _ Genesis = GT
+    compare Genesis _ = LT
+    compare (Tip hdr _ _) (Tip hdr' _ _) =
+        compare (headerHash hdr) (headerHash hdr')
+
+newtype Chains = Chains (Map.IntMap (Set.Set Chain))
     deriving (Eq, Show)
 
 instance ToJSON Chains where
@@ -75,6 +86,7 @@ instance ToJSON Chains where
         asJSON (hdr, hgt) =
             Json.object
                 [ "header" .= cborHeader
+                , "slot" .= hbSlotNo hdrBody
                 , "height" .= hgt
                 , "hash" .= headerHash hdr
                 , "parent" .= prevHashToNonce (hbPrev hdrBody)
@@ -88,13 +100,15 @@ toJSONText = decodeUtf8 . Base16.encode . serialize' testVersion
 
 toHeaderList :: Chains -> [(Header StandardCrypto, BlockNo)]
 toHeaderList (Chains chains) =
-    -- TODO dedup and sort topologically
-    concatMap asList chains
+    fst $ Map.mapAccum asHeadersList [] chains
+  where
+    asList :: Chain -> Maybe (Header StandardCrypto, BlockNo)
+    asList = \case
+        Genesis -> Nothing
+        Tip hdr hgt _ -> Just (hdr, hgt)
 
-asList :: Chain -> [(Header StandardCrypto, BlockNo)]
-asList = \case
-    Genesis -> []
-    Tip hdr hgt parent -> (hdr, hgt) : asList parent
+    asHeadersList :: [(Header StandardCrypto, BlockNo)] -> Set.Set Chain -> ([(Header StandardCrypto, BlockNo)], Map.IntMap [Chain])
+    asHeadersList acc cs = (acc <> mapMaybe asList (Set.toList cs), mempty)
 
 instance Eq StakePool where
     a == b =
@@ -104,13 +118,13 @@ instance Eq StakePool where
             && poolId a == poolId b
 
 generateChain :: Int -> IO Chains
-generateChain numSlots = Chains <$> generate (genChain $ fromIntegral numSlots)
+generateChain numSlots = generate (genChain $ fromIntegral numSlots)
 
-genChain :: Word64 -> Gen [Chain]
+genChain :: Word64 -> Gen Chains
 genChain numSlots = do
     stakePools <- genStakePools
     context <- genContext
-    genHeaders context stakePools 0 numSlots [] []
+    genHeaders context stakePools 0 numSlots [] (Chains mempty)
 
 genContext :: Gen ChainContext
 genContext = do
@@ -142,12 +156,22 @@ genStakePool totalStake pools stake = do
         individualStake = IndividualPoolStake stake (coin $ floor $ toRational totalStake * stake) vrfKey
     pure $ StakePool{..} : pools
 
-genHeaders :: ChainContext -> [StakePool] -> Word64 -> Word64 -> [Chain] -> [Chain] -> Gen [Chain]
+genHeaders :: ChainContext -> [StakePool] -> Word64 -> Word64 -> [Chain] -> Chains -> Gen Chains
 genHeaders context stakePools curSlot maxSlot tips acc
     | curSlot >= maxSlot = pure acc
     | otherwise = do
         newTips <- forM stakePools $ \poolContext -> genHeader context poolContext curSlot tips
-        genHeaders context stakePools (succ curSlot) maxSlot newTips (newTips <> acc)
+        genHeaders context stakePools (succ curSlot) maxSlot newTips (newTips <+> acc)
+
+(<+>) :: [Chain] -> Chains -> Chains
+[] <+> chains = chains
+cs <+> chains = foldr (+>) chains cs
+
+(+>) :: Chain -> Chains -> Chains
+Genesis +> chains = chains
+c@(Tip hdr _ _) +> (Chains chains) = Chains $ Map.insertWith (<>) (fromIntegral slot) (Set.singleton c) chains
+  where
+    Header HeaderBody{hbSlotNo = SlotNo slot} _ = hdr
 
 {- | Generate header for this pool a this slot.
 Could be a new header, or could be one of the tips if the pool does not produce a block
@@ -156,11 +180,12 @@ at this slot.
 genHeader :: ChainContext -> StakePool -> Word64 -> [Chain] -> Gen Chain
 genHeader context@ChainContext{nonce} stakePool curSlot tips
     | isSlotLeader context stakePool curSlot = do
-        let parent = selectLongestChain tips
+        parent <- selectChain
         genNextBlock context stakePool parent (SlotNo curSlot) nonce
     | otherwise =
-        -- node catches up with the longest chain, or keeps following a fork
-        oneof [pure $ selectLongestChain tips, if null tips then pure Genesis else elements tips]
+        selectChain
+  where
+    selectChain = oneof [pure $ selectLongestChain tips, if null tips then pure Genesis else elements tips]
 
 genNextBlock :: ChainContext -> StakePool -> Chain -> SlotNo -> Nonce -> Gen Chain
 genNextBlock ChainContext{praosSlotsPerKESPeriod} StakePool{vrfSignKey, coldSignKey, kesSignKey, ocertCounter} parent hbSlotNo nonce = do
