@@ -17,13 +17,13 @@ import Cardano.Crypto.VRF (deriveVerKeyVRF, hashVerKeyVRF)
 import qualified Cardano.Crypto.VRF as VRF
 import qualified Cardano.Crypto.VRF.Praos as VRF
 import Cardano.Ledger.BaseTypes (ActiveSlotCoeff, BlockNo (..), Nonce (..), PositiveUnitInterval, SlotNo (..), boundRational, mkActiveSlotCoeff)
-import Cardano.Ledger.Binary (serialize')
+import Cardano.Ledger.Binary (EncCBOR, serialize')
 import Cardano.Ledger.Coin (Coin (..))
 import Cardano.Ledger.Compactible (CompactForm, toCompact)
 import Cardano.Ledger.Crypto (StandardCrypto)
 import Cardano.Ledger.Keys (VKey (..), signedDSIGN)
 import Cardano.Ledger.PoolDistr (IndividualPoolStake (..))
-import Cardano.Protocol.TPraos.BHeader (HashHeader (..), PrevHash (..), checkLeaderNatValue)
+import Cardano.Protocol.TPraos.BHeader (HashHeader (..), PrevHash (..), checkLeaderNatValue, prevHashToNonce)
 import Cardano.Protocol.TPraos.OCert (KESPeriod (..), OCert (..), OCertSignable (..))
 import Control.Monad (foldM, forM)
 import Data.Aeson (ToJSON (..), (.=))
@@ -34,6 +34,7 @@ import Data.Foldable (maximumBy)
 import Data.Function (on)
 import Data.Maybe (fromJust)
 import Data.Ratio ((%))
+import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8)
 import Data.Word (Word64)
 import Ouroboros.Consensus.Protocol.Praos.Header (Header, HeaderBody (..), headerHash, pattern Header)
@@ -75,9 +76,15 @@ instance ToJSON Chains where
             Json.object
                 [ "header" .= cborHeader
                 , "height" .= hgt
+                , "hash" .= headerHash hdr
+                , "parent" .= prevHashToNonce (hbPrev hdrBody)
                 ]
           where
-            cborHeader = decodeUtf8 . Base16.encode $ serialize' testVersion hdr
+            Header hdrBody _ = hdr
+            cborHeader = toJSONText hdr
+
+toJSONText :: (EncCBOR a) => a -> Text
+toJSONText = decodeUtf8 . Base16.encode . serialize' testVersion
 
 toHeaderList :: Chains -> [(Header StandardCrypto, BlockNo)]
 toHeaderList (Chains chains) =
