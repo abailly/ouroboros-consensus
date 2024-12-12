@@ -65,7 +65,7 @@ data StakePool = StakePool
 
 data Chain
     = Genesis
-    | Tip {header :: !(Header StandardCrypto), height :: !BlockNo, parent :: !Chain}
+    | Tip !(Header StandardCrypto) !BlockNo !Chain
     deriving (Eq, Show)
 
 instance Ord Chain where
