@@ -95,6 +95,7 @@ library unstable-protocol-testlib
     , cardano-protocol-tpraos
     , cardano-slotting
     , containers
+    , mtl
     , ouroboros-consensus-protocol
     , QuickCheck
     , text

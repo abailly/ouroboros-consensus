@@ -1,25 +1,11 @@
 module GenHeader.Parsers (parseOptions) where
 
-import Cardano.Tools.Headers (Options (..))
-import Data.Version (showVersion)
-import Options.Applicative (
-    Parser,
-    ParserInfo,
-    auto,
-    command,
-    execParser,
-    help,
-    helper,
-    hsubparser,
-    info,
-    long,
-    metavar,
-    option,
-    progDesc,
-    short,
-    (<**>),
- )
-import Paths_ouroboros_consensus_cardano (version)
+import           Cardano.Tools.Headers (Options (..))
+import           Data.Version (showVersion)
+import           Options.Applicative (Parser, ParserInfo, auto, command,
+                     execParser, help, helper, hsubparser, info, long, metavar,
+                     option, progDesc, short, (<**>))
+import           Paths_ouroboros_consensus_cardano (version)
 
 parseOptions :: IO Options
 parseOptions = execParser argsParser

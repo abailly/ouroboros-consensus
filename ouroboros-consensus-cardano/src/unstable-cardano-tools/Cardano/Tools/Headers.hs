@@ -5,56 +5,39 @@
 
 -- | Tooling to generate and validate (Praos) headers.
 module Cardano.Tools.Headers (
-    Options (..),
-    ValidationResult (..),
-    run,
-    validate,
-) where
+    Options (..)
+  , ValidationResult (..)
+  , run
+  , validate
+  ) where
 
-import Cardano.Crypto.DSIGN (deriveVerKeyDSIGN)
-import Cardano.Crypto.VRF (
-    VRFAlgorithm (deriveVerKeyVRF, hashVerKeyVRF),
- )
-import Cardano.Ledger.Api (ConwayEra, StandardCrypto)
-import Cardano.Ledger.Coin (Coin (..))
-import Cardano.Ledger.Compactible (toCompact)
-import Cardano.Ledger.Keys (VKey (..), hashKey)
-import Cardano.Ledger.PoolDistr (IndividualPoolStake (..))
-import Cardano.Prelude (
-    ExitCode (..),
-    exitWith,
-    forM_,
-    hPutStrLn,
-    stderr,
- )
-import Control.Monad.Except (runExcept)
+import           Cardano.Crypto.DSIGN (deriveVerKeyDSIGN)
+import           Cardano.Crypto.VRF
+                     (VRFAlgorithm (deriveVerKeyVRF, hashVerKeyVRF))
+import           Cardano.Ledger.Api (ConwayEra, StandardCrypto)
+import           Cardano.Ledger.Coin (Coin (..))
+import           Cardano.Ledger.Compactible (toCompact)
+import           Cardano.Ledger.Keys (VKey (..), hashKey)
+import           Cardano.Ledger.PoolDistr (IndividualPoolStake (..))
+import           Cardano.Prelude (ExitCode (..), exitWith, forM_, hPutStrLn,
+                     stderr)
+import           Control.Monad.Except (runExcept)
 import qualified Data.Aeson as Json
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Map as Map
-import Data.Maybe (fromJust)
-import Ouroboros.Consensus.Block (validateView)
-import Ouroboros.Consensus.Protocol.Praos (
-    Praos,
-    doValidateKESSignature,
-    doValidateVRFSignature,
- )
-import Ouroboros.Consensus.Shelley.HFEras ()
-import Ouroboros.Consensus.Shelley.Ledger (
-    ShelleyBlock,
-    mkShelleyHeader,
- )
-import Ouroboros.Consensus.Shelley.Protocol.Praos ()
+import           Data.Maybe (fromJust)
+import           Ouroboros.Consensus.Block (validateView)
+import           Ouroboros.Consensus.Protocol.Praos (Praos,
+                     doValidateKESSignature, doValidateVRFSignature)
+import           Ouroboros.Consensus.Shelley.HFEras ()
+import           Ouroboros.Consensus.Shelley.Ledger (ShelleyBlock,
+                     mkShelleyHeader)
+import           Ouroboros.Consensus.Shelley.Protocol.Praos ()
 import qualified Test.Ouroboros.Consensus.Protocol.Praos.Chain as Chain
-import Test.Ouroboros.Consensus.Protocol.Praos.Header (
-    GeneratorContext (..),
-    MutatedHeader (..),
-    Mutation (..),
-    Sample (..),
-    expectedError,
-    generateSamples,
-    header,
-    mutation,
- )
+import           Test.Ouroboros.Consensus.Protocol.Praos.Header
+                     (GeneratorContext (..), MutatedHeader (..), Mutation (..),
+                     Sample (..), expectedError, generateSamples, header,
+                     mutation)
 
 type ConwayBlock = ShelleyBlock (Praos StandardCrypto) (ConwayEra StandardCrypto)
 
