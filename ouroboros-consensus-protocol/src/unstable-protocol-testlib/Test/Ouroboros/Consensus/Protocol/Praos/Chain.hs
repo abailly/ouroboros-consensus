@@ -55,7 +55,7 @@ import           Test.Ouroboros.Consensus.Protocol.Praos.Header (KESKey, PoolId,
                      gen32Bytes, genHash, mkPoolId, newKESSigningKey,
                      newVRFSigningKey, protocolVersionZero, testVersion)
 import           Test.QuickCheck (Gen, Positive (..), arbitrary, choose,
-                     elements, frequency, generate)
+                     generate)
 
 data ChainContext = ChainContext
     { praosSlotsPerKESPeriod :: !Word64
@@ -64,17 +64,6 @@ data ChainContext = ChainContext
     , nonce                  :: !Nonce
     }
     deriving (Eq, Show)
-
-data StakePool = StakePool
-    { ocertCounter    :: !Word64
-    , kesSignKey      :: !KESKey
-    , coldSignKey     :: !(SignKeyDSIGN Ed25519DSIGN)
-    , vrfSignKey      :: !(VRF.SignKeyVRF VRF.PraosVRF)
-    , poolId          :: !PoolId
-    , individualStake :: !(IndividualPoolStake StandardCrypto)
-    , chain           :: !Chain
-    }
-    deriving (Show)
 
 data Chain
     = Genesis
@@ -113,6 +102,19 @@ instance ToJSON Chains where
             Header hdrBody _ = hdr
             cborHeader = toJSONText hdr
 
+mkChains :: [Chain] -> Chains
+mkChains chains = chains <+> Chains mempty
+
+(<+>) :: [Chain] -> Chains -> Chains
+[] <+> chains = chains
+cs <+> chains = foldr (+>) chains cs
+
+(+>) :: Chain -> Chains -> Chains
+Genesis +> chains = chains
+c@(Tip hdr _ parent) +> chains = Chains $ IntMap.insertWith (<>) (fromIntegral slot) (Set.singleton c) (unChains $ parent +> chains)
+  where
+    Header HeaderBody{hbSlotNo = SlotNo slot} _ = hdr
+
 toJSONText :: (EncCBOR a) => a -> Text
 toJSONText = decodeUtf8 . Base16.encode . serialize' testVersion
 
@@ -128,6 +130,18 @@ toHeaderList (Chains chains) =
     asHeadersList :: [(Header StandardCrypto, BlockNo)] -> Set.Set Chain -> ([(Header StandardCrypto, BlockNo)], IntMap.IntMap [Chain])
     asHeadersList acc cs = (acc <> mapMaybe asList (Set.toList cs), mempty)
 
+data StakePool = StakePool
+    { ocertCounter    :: !Word64
+    , kesSignKey      :: !KESKey
+    , coldSignKey     :: !(SignKeyDSIGN Ed25519DSIGN)
+    , vrfSignKey      :: !(VRF.SignKeyVRF VRF.PraosVRF)
+    , poolId          :: !PoolId
+    , individualStake :: !(IndividualPoolStake StandardCrypto)
+    , poolIdx         :: !Int
+    , chain           :: !Chain
+    }
+    deriving (Show)
+
 instance Eq StakePool where
     a == b =
         ocertCounter a == ocertCounter b
@@ -136,6 +150,21 @@ instance Eq StakePool where
             && poolId a == poolId b
             && individualStake a == individualStake b
 
+{- | Decision procedure to select current best chain for a stake pool.
+Such a strategy mimics the true behaviour of the system where honest nodes
+diffuse  blocks and select the longest chain they are aware of whereas
+adversaries may try to create forks.
+-}
+type Strategy = Word64 -> StakePool -> StateT SPOs Gen Chain
+
+{- | A very simple strategy which assumes diffusion is perfect and all
+nodes always select the longest chain from all the chains.
+-}
+noAdversariesStrategy :: Strategy
+noAdversariesStrategy _curSlot _stakePool = do
+    SPOs spos <- get
+    lift $ pure $ selectLongestChain $ fmap chain spos
+
 generateChain :: Int -> IO Chains
 generateChain numSlots = generate (genChain $ fromIntegral numSlots)
 
@@ -143,7 +172,7 @@ genChain :: Word64 -> Gen Chains
 genChain numSlots = do
     stakePools <- genStakePools
     context <- genContext
-    genHeaders context 0 numSlots `evalStateT` SPOs stakePools
+    genHeaders noAdversariesStrategy context 0 numSlots `evalStateT` SPOs stakePools
 
 genContext :: Gen ChainContext
 genContext = do
@@ -159,18 +188,19 @@ genContext = do
 genStakePools :: Gen [StakePool]
 genStakePools =
     arbitrary >>= \(Positive numPools) ->
-        foldM (genStakePool 10_000_000_000_000_000) [] (replicate (fromInteger numPools) $ 1 % numPools)
+        foldM (genStakePool numPools 10_000_000_000_000_000) [] [1 .. fromIntegral numPools]
 
 coin :: Integer -> CompactForm Coin
 coin = fromJust . toCompact . Coin
 
-genStakePool :: Integer -> [StakePool] -> Rational -> Gen [StakePool]
-genStakePool totalStake pools stake = do
+genStakePool :: Integer -> Integer -> [StakePool] -> Int -> Gen [StakePool]
+genStakePool numPools totalStake pools poolIdx = do
     ocertCounter <- choose (10, 100)
     kesSignKey <- newKESSigningKey <$> gen32Bytes
     coldSignKey <- genKeyDSIGN . mkSeedFromBytes <$> gen32Bytes
     vrfSignKey <- fst <$> newVRFSigningKey <$> gen32Bytes
-    let poolId = mkPoolId coldSignKey
+    let stake = 1 % numPools
+        poolId = mkPoolId coldSignKey
         vrfKey = hashVerKeyVRF $ deriveVerKeyVRF vrfSignKey
         individualStake = IndividualPoolStake stake (coin $ floor $ toRational totalStake * stake) vrfKey
         chain = Genesis
@@ -179,53 +209,37 @@ genStakePool totalStake pools stake = do
 newtype SPOs = SPOs {spos :: [StakePool]}
     deriving (Show)
 
-genHeaders :: ChainContext -> Word64 -> Word64 -> StateT SPOs Gen Chains
-genHeaders context curSlot maxSlot
+genHeaders :: Strategy -> ChainContext -> Word64 -> Word64 -> StateT SPOs Gen Chains
+genHeaders strategy context curSlot maxSlot
     | curSlot >= maxSlot = gets spos >>= pure . mkChains . map chain
     | otherwise = do
-        gets spos >>= mapM_ (genHeader context curSlot)
-        genHeaders context (succ curSlot) maxSlot
-
-mkChains :: [Chain] -> Chains
-mkChains chains = chains <+> Chains mempty
-
-(<+>) :: [Chain] -> Chains -> Chains
-[] <+> chains = chains
-cs <+> chains = foldr (+>) chains cs
-
-(+>) :: Chain -> Chains -> Chains
-Genesis +> chains = chains
-c@(Tip hdr _ parent) +> chains = Chains $ IntMap.insertWith (<>) (fromIntegral slot) (Set.singleton c) (unChains $ parent +> chains)
-  where
-    Header HeaderBody{hbSlotNo = SlotNo slot} _ = hdr
+        gets spos >>= mapM_ (genHeader strategy context curSlot)
+        genHeaders strategy context (succ curSlot) maxSlot
 
 {- | Generate header for this pool a this slot.
 Could be a new header, or could be one of the tips if the pool does not produce a block
 at this slot.
 -}
-genHeader :: ChainContext -> Word64 -> StakePool -> StateT SPOs Gen Chain
-genHeader context@ChainContext{nonce} curSlot stakePool
-    | isSlotLeader context stakePool curSlot = do
-        parent <- selectChain
-        block <- lift $ genNextBlock context stakePool parent (SlotNo curSlot) nonce
-        modify' $ \(SPOs spos) -> SPOs $ updateChain stakePool block spos
-        pure block
+genHeader :: Strategy -> ChainContext -> Word64 -> StakePool -> StateT SPOs Gen Chain
+genHeader strategy context@ChainContext{nonce} curSlot stakePool
+    | isSlotLeader context stakePool curSlot =
+        strategy curSlot stakePool
+            >>= lift . genNextBlock context stakePool (SlotNo curSlot) nonce
+            >>= updateSPOChain stakePool
     | otherwise =
-        selectChain
+        strategy curSlot stakePool
+            >>= updateSPOChain stakePool
   where
-    selectChain = do
-        SPOs spos <- get
-        lift $
-            frequency
-                [ (1, elements $ fmap chain spos)
-                , (9, pure $ selectLongestChain $ fmap chain spos)
-                ]
+    updateSPOChain :: StakePool -> Chain -> StateT SPOs Gen Chain
+    updateSPOChain spo chain = do
+        modify' $ \(SPOs spos) -> SPOs $ updateChain spo chain spos
+        return chain
 
 updateChain :: StakePool -> Chain -> [StakePool] -> [StakePool]
 updateChain spo chain = map $ \sp -> if poolId sp == poolId spo then sp{chain} else sp
 
-genNextBlock :: ChainContext -> StakePool -> Chain -> SlotNo -> Nonce -> Gen Chain
-genNextBlock ChainContext{praosSlotsPerKESPeriod} StakePool{vrfSignKey, coldSignKey, kesSignKey, ocertCounter} parent hbSlotNo nonce = do
+genNextBlock :: ChainContext -> StakePool -> SlotNo -> Nonce -> Chain -> Gen Chain
+genNextBlock ChainContext{praosSlotsPerKESPeriod} StakePool{vrfSignKey, coldSignKey, kesSignKey, ocertCounter} hbSlotNo nonce parent = do
     let hbBlockNo = BlockNo $ blockHeight parent + 1
         rho' = mkInputVRF hbSlotNo nonce
         hbVrfRes = VRF.evalCertified () rho' vrfSignKey
