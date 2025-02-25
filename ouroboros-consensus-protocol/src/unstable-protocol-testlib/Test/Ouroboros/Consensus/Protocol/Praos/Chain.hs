@@ -47,6 +47,7 @@ import qualified Data.Set as Set
 import           Data.Text (Text)
 import           Data.Text.Encoding (decodeUtf8)
 import           Data.Word (Word64)
+import           Debug.Trace (trace)
 import           Ouroboros.Consensus.Protocol.Praos.Header (Header,
                      HeaderBody (..), headerHash, pattern Header)
 import           Ouroboros.Consensus.Protocol.Praos.VRF (mkInputVRF,
@@ -55,7 +56,7 @@ import           Test.Ouroboros.Consensus.Protocol.Praos.Header (KESKey, PoolId,
                      gen32Bytes, genHash, mkPoolId, newKESSigningKey,
                      newVRFSigningKey, protocolVersionZero, testVersion)
 import           Test.QuickCheck (Gen, Positive (..), arbitrary, choose,
-                     generate)
+                     elements, frequency, generate, oneof, resize)
 
 data ChainContext = ChainContext
     { praosSlotsPerKESPeriod :: !Word64
@@ -159,11 +160,37 @@ type Strategy = Word64 -> StakePool -> StateT SPOs Gen Chain
 
 {- | A very simple strategy which assumes diffusion is perfect and all
 nodes always select the longest chain from all the chains.
+
+This effectively leads to a single chain without any fork.
 -}
 noAdversariesStrategy :: Strategy
 noAdversariesStrategy _curSlot _stakePool = do
     SPOs spos <- get
     lift $ pure $ selectLongestChain $ fmap chain spos
+
+{- | A strategy where a minority of the nodes are somewhat isolated from
+   the others, most of the time.
+-}
+isolatedClusterStrategy :: Strategy
+isolatedClusterStrategy _curSlot StakePool{poolIdx} = do
+    SPOs pools <- get
+    let minority = length pools `div` 2 - 1
+        minPools = filter (\StakePool{poolIdx} -> poolIdx <= minority) pools
+        majPools = filter (\StakePool{poolIdx} -> poolIdx > minority) pools
+        bestChain = selectLongestChain $ fmap chain pools
+    if poolIdx <= minority
+        then
+            lift $
+                frequency
+                    [ (9, elements $ fmap chain minPools)
+                    , (1, pure bestChain)
+                    ]
+        else
+            lift $
+                frequency
+                    [ (9, elements $ fmap chain majPools)
+                    , (1, pure bestChain)
+                    ]
 
 generateChain :: Int -> IO Chains
 generateChain numSlots = generate (genChain $ fromIntegral numSlots)
@@ -172,7 +199,7 @@ genChain :: Word64 -> Gen Chains
 genChain numSlots = do
     stakePools <- genStakePools
     context <- genContext
-    genHeaders noAdversariesStrategy context 0 numSlots `evalStateT` SPOs stakePools
+    genHeaders isolatedClusterStrategy context 0 numSlots `evalStateT` SPOs stakePools
 
 genContext :: Gen ChainContext
 genContext = do
