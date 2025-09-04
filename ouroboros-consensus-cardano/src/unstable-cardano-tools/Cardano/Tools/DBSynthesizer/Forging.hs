@@ -91,9 +91,11 @@ runForge epochSize_ nextSlot opts chainDB blockForging cfg genTxs = do
     go :: ForgeState -> IO ForgeState
     go forgeState
       | forgingDone forgeState = pure forgeState
-      | otherwise =
-          go . nextForgeState forgeState . isRight
-            =<< runExceptT (goSlot $ currentSlot forgeState)
+      | otherwise = do
+          let slot = currentSlot forgeState
+          isForging <- runExceptT (goSlot slot)
+          snapshotState (topLevelConfigCodec cfg) epochSize slot chainDB
+          go . nextForgeState forgeState . isRight $ isForging
 
     nextForgeState :: ForgeState -> Bool -> ForgeState
     nextForgeState ForgeState {currentSlot, forged, currentEpoch, processed} didForge =
@@ -114,22 +116,15 @@ runForge epochSize_ nextSlot opts chainDB blockForging cfg genTxs = do
     goSlot :: SlotNo -> ExceptT String IO ()
     goSlot currentSlot = do
       -- Figure out which block to connect to
-      BlockContext {bcBlockNo, bcPrevPoint} <- do
-        eBlkCtx <-
-          lift $
-            atomically $
-              mkCurrentBlockContext currentSlot
-                <$> ChainDB.getCurrentChain chainDB
-        case eBlkCtx of
-          Right blkCtx -> return blkCtx
-          Left {} -> exitEarly' "no block context"
+      BlockContext {bcBlockNo, bcPrevPoint} <- getBlockContext currentSlot chainDB
 
       -- Get corresponding ledger state, ledgder view and ticked 'ChainDepState'
       unticked <- do
         mExtLedger <- lift $ atomically $ ChainDB.getPastLedger chainDB bcPrevPoint
         case mExtLedger of
           Just l -> return l
-          Nothing -> exitEarly' "no ledger state"
+          Nothing -> do
+            exitEarly' "no ledger state"
 
         ledgerView <-
           case runExcept $ forecastFor
@@ -223,35 +218,53 @@ runForge epochSize_ nextSlot opts chainDB blockForging cfg genTxs = do
       mbCurTip <- lift $ atomically $ ChainDB.blockProcessed result
 
       case mbCurTip of
-        SuccesfullyAddedBlock point -> lift $ snapshotState (topLevelConfigCodec cfg) epochSize currentSlot point chainDB
-        FailedToAddBlock reason -> exitEarly' $ "block not adopted: " <> reason
+        SuccesfullyAddedBlock point | blockPoint newBlock == point -> pure ()
+        SuccesfullyAddedBlock point -> exitEarly' $ "block not adopted: " <> show point
+        FailedToAddBlock reason -> exitEarly' $ "failed to add block: " <> reason
+
+getBlockContext :: (HasCallStack, GetHeader blk, BasicEnvelopeValidation blk) => SlotNo -> ChainDB IO blk -> ExceptT String IO (BlockContext blk)
+getBlockContext currentSlot chainDB = do
+  eBlkCtx <-
+    liftIO $
+      atomically $
+        mkCurrentBlockContext currentSlot
+          <$> ChainDB.getCurrentChain chainDB
+  case eBlkCtx of
+    Right blkCtx -> return blkCtx
+    Left {} -> throwE "no block context"
 
 snapshotState ::
   forall blk.
-  ( EncodeDisk blk (LedgerState blk EmptyMK),
+  ( HasCallStack,
+    EncodeDisk blk (LedgerState blk EmptyMK),
     EncodeDisk blk (ChainDepState (BlockProtocol blk)),
     EncodeDisk blk (AnnTip blk),
-    StandardHash blk
+    GetHeader blk,
+    BasicEnvelopeValidation blk
   ) =>
   CodecConfig blk ->
   Word64 ->
   SlotNo ->
-  Point blk ->
   ChainDB IO blk ->
   IO ()
-snapshotState codecConfig epochSize (SlotNo slot) point chainDb
-  | remainingSlotsInEpoch == 0 = do
+snapshotState codecConfig epochSize currentSlot@(SlotNo slot) chainDb
+  | remainingSlotsInEpoch == 0 && epochNo > 0 = do
       putStrLn $ "--> writing ledger snapshot: " ++ show snapshotPath
+      BlockContext {bcPrevPoint = point} <- runExceptT (getBlockContext currentSlot chainDb) >>= either error pure
       extLedgerState <- fromMaybe (error $ "fail to get ledger state for point " <> show point) <$> atomically (ChainDB.getPastLedger chainDb point)
-      void $ writeExtLedgerState @_ @blk fs encoder snapshotPath extLedgerState
+      cleanupSnapshot
+      void $ writeExtLedgerState @_ @blk (SomeHasFS fs) encoder snapshotPath extLedgerState
   where
     (epochNo, remainingSlotsInEpoch) = slot `divMod` epochSize
-    snapshotPath = mkFsPath ["ledger", "snapshot", show epochNo]
+    snapshotPath = mkFsPath ["ledger.snapshot." <> show epochNo]
     encoder = encodeDiskExtLedgerState codecConfig
-    fs = SomeHasFS $ ioHasFS @IO (MountPoint ".")
-snapshotState _ _ slot _ _ = do
-  putStrLn $ "--> skip slot " <> show slot
-  pure ()
+    fs = ioHasFS @IO (MountPoint ".")
+    cleanupSnapshot = do
+      fileExists <- doesFileExist fs snapshotPath
+      when fileExists $ do
+        putStrLn $ "----> remove previous file " <> show snapshotPath
+        removeFile fs snapshotPath
+snapshotState _ _ _ _ = pure ()
 
 -- | Context required to forge a block
 data BlockContext blk = BlockContext
