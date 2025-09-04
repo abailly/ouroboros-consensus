@@ -4,10 +4,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Cardano.Tools.DBSynthesizer.Forging (
-    GenTxs
-  , runForge
-  ) where
+module Cardano.Tools.DBSynthesizer.Forging
+  ( GenTxs,
+    runForge,
+  )
+where
 
 import           Cardano.Tools.DBSynthesizer.Types (ForgeLimit (..),
                      ForgeResult (..))
@@ -44,13 +45,12 @@ import           Ouroboros.Consensus.Util.IOLike (atomically)
 import           Ouroboros.Network.AnchoredFragment as AF (Anchor (..),
                      AnchoredFragment, AnchoredSeq (..), headPoint)
 
-
-data ForgeState =
-  ForgeState {
-    currentSlot  :: !SlotNo
-  , forged       :: !Word64
-  , currentEpoch :: !Word64
-  , processed    :: !SlotNo
+data ForgeState
+  = ForgeState
+  { currentSlot :: !SlotNo,
+    forged :: !Word64,
+    currentEpoch :: !Word64,
+    processed :: !SlotNo
   }
 
 initialForgeState :: ForgeState
@@ -74,59 +74,62 @@ runForge ::
     -> GenTxs blk
     -> IO ForgeResult
 runForge epochSize_ nextSlot opts chainDB blockForging cfg genTxs = do
-    putStrLn $ "--> epoch size: " ++ show epochSize_
-    putStrLn $ "--> will process until: " ++ show opts
-    endState <- go initialForgeState {currentSlot = nextSlot}
-    putStrLn $ "--> forged and adopted " ++ show (forged endState) ++ " blocks; reached " ++ show (currentSlot endState)
-    pure $ ForgeResult $ fromIntegral $ forged endState
+  putStrLn $ "--> epoch size: " ++ show epochSize_
+  putStrLn $ "--> will process until: " ++ show opts
+  endState <- go initialForgeState {currentSlot = nextSlot}
+  putStrLn $ "--> forged and adopted " ++ show (forged endState) ++ " blocks; reached " ++ show (currentSlot endState)
+  pure $ ForgeResult $ fromIntegral $ forged endState
   where
     epochSize = unEpochSize epochSize_
 
     forgingDone :: ForgeState -> Bool
     forgingDone = case opts of
-        ForgeLimitSlot s  -> (s == ) . processed
-        ForgeLimitBlock b -> (b == ) . forged
-        ForgeLimitEpoch e -> (e == ) . currentEpoch
+      ForgeLimitSlot s -> (s ==) . processed
+      ForgeLimitBlock b -> (b ==) . forged
+      ForgeLimitEpoch e -> (e ==) . currentEpoch
 
     go :: ForgeState -> IO ForgeState
     go forgeState
       | forgingDone forgeState = pure forgeState
-      | otherwise = go . nextForgeState forgeState . isRight
-          =<< runExceptT (goSlot $ currentSlot forgeState)
+      | otherwise =
+          go . nextForgeState forgeState . isRight
+            =<< runExceptT (goSlot $ currentSlot forgeState)
 
     nextForgeState :: ForgeState -> Bool -> ForgeState
-    nextForgeState ForgeState{currentSlot, forged, currentEpoch, processed} didForge = ForgeState {
-          currentSlot = currentSlot + 1
-        , forged = forged + if didForge then 1 else 0
-        , currentEpoch = epoch'
-        , processed = processed'
+    nextForgeState ForgeState {currentSlot, forged, currentEpoch, processed} didForge =
+      ForgeState
+        { currentSlot = currentSlot + 1,
+          forged = forged + if didForge then 1 else 0,
+          currentEpoch = epoch',
+          processed = processed'
         }
       where
         processed' = processed + 1
         epoch' = currentEpoch + if unSlotNo processed' `rem` epochSize == 0 then 1 else 0
 
-
     -- just some shims; in this ported code, we use ExceptT instead of WithEarlyExit
-    exitEarly'  = throwE
-    lift        = liftIO
+    exitEarly' = throwE
+    lift = liftIO
 
     goSlot :: SlotNo -> ExceptT String IO ()
     goSlot currentSlot = do
-        -- Figure out which block to connect to
-        BlockContext{bcBlockNo, bcPrevPoint} <- do
-          eBlkCtx <- lift $ atomically $
-            mkCurrentBlockContext currentSlot
+      -- Figure out which block to connect to
+      BlockContext {bcBlockNo, bcPrevPoint} <- do
+        eBlkCtx <-
+          lift $
+            atomically $
+              mkCurrentBlockContext currentSlot
                 <$> ChainDB.getCurrentChain chainDB
-          case eBlkCtx of
-            Right blkCtx -> return blkCtx
-            Left{}       -> exitEarly' "no block context"
+        case eBlkCtx of
+          Right blkCtx -> return blkCtx
+          Left {} -> exitEarly' "no block context"
 
-        -- Get corresponding ledger state, ledgder view and ticked 'ChainDepState'
-        unticked <- do
-          mExtLedger <- lift $ atomically $ ChainDB.getPastLedger chainDB bcPrevPoint
-          case mExtLedger of
-            Just l  -> return l
-            Nothing -> exitEarly' "no ledger state"
+      -- Get corresponding ledger state, ledgder view and ticked 'ChainDepState'
+      unticked <- do
+        mExtLedger <- lift $ atomically $ ChainDB.getPastLedger chainDB bcPrevPoint
+        case mExtLedger of
+          Just l -> return l
+          Nothing -> exitEarly' "no ledger state"
 
         ledgerView <-
           case runExcept $ forecastFor
@@ -161,15 +164,52 @@ runForge epochSize_ nextSlot opts chainDB blockForging cfg genTxs = do
             tickedLedgerState =
               applyChainTick
                 (configLedger cfg)
-                currentSlot
                 (ledgerState unticked)
 
         -- Let the caller generate transactions
         txs <- lift $ genTxs currentSlot tickedLedgerState
 
-        -- Actually produce the block
-        newBlock <- lift $
-          Block.forgeBlock blockForging'
+      let tickedChainDepState :: Ticked (ChainDepState (BlockProtocol blk))
+          tickedChainDepState =
+            tickChainDepState
+              (configConsensus cfg)
+              ledgerView
+              currentSlot
+              (headerStateChainDep (headerState unticked))
+
+      -- Check if any forger is slot leader
+      let checkShouldForge' f =
+            checkShouldForge f nullTracer cfg currentSlot tickedChainDepState
+
+      checks <- zip blockForging <$> liftIO (mapM checkShouldForge' blockForging)
+
+      (blockForging', proof) <- case [(f, p) | (f, ShouldForge p) <- checks] of
+        x : _ -> pure x
+        _ -> exitEarly' "NoLeader"
+
+      -- Tick the ledger state for the 'SlotNo' we're producing a block for
+      let tickedLedgerState :: Ticked (LedgerState blk) DiffMK
+          tickedLedgerState =
+            applyChainTick
+              OmitLedgerEvents
+              (configLedger cfg)
+              currentSlot
+              (ledgerState unticked)
+
+      -- Let the caller generate transactions
+      txs <- lift $ withRegistry $ \reg ->
+        genTxs
+          currentSlot
+          ( either (error "Impossible: we are forging on top of a block that the ChainDB cannot create forkers on!") id
+              <$> getReadOnlyForkerAtPoint chainDB reg (SpecificPoint bcPrevPoint)
+          )
+          tickedLedgerState
+
+      -- Actually produce the block
+      newBlock <-
+        lift $
+          Block.forgeBlock
+            blockForging'
             cfg
             bcBlockNo
             currentSlot
@@ -177,50 +217,79 @@ runForge epochSize_ nextSlot opts chainDB blockForging cfg genTxs = do
             txs
             proof
 
-        -- Add the block to the chain DB (synchronously) and verify adoption
-        let noPunish = InvalidBlockPunishment.noPunishment
-        result <- lift $ ChainDB.addBlockAsync chainDB noPunish newBlock
-        mbCurTip <- lift $ atomically $ ChainDB.blockProcessed result
+      -- Add the block to the chain DB (synchronously) and verify adoption
+      let noPunish = InvalidBlockPunishment.noPunishment
+      result <- lift $ ChainDB.addBlockAsync chainDB noPunish newBlock
+      mbCurTip <- lift $ atomically $ ChainDB.blockProcessed result
 
-        when (mbCurTip /= SuccesfullyAddedBlock (blockPoint newBlock)) $
-            exitEarly' "block not adopted"
+      case mbCurTip of
+        SuccesfullyAddedBlock point -> lift $ snapshotState (topLevelConfigCodec cfg) epochSize currentSlot point chainDB
+        FailedToAddBlock reason -> exitEarly' $ "block not adopted: " <> reason
+
+snapshotState ::
+  forall blk.
+  ( EncodeDisk blk (LedgerState blk EmptyMK),
+    EncodeDisk blk (ChainDepState (BlockProtocol blk)),
+    EncodeDisk blk (AnnTip blk),
+    StandardHash blk
+  ) =>
+  CodecConfig blk ->
+  Word64 ->
+  SlotNo ->
+  Point blk ->
+  ChainDB IO blk ->
+  IO ()
+snapshotState codecConfig epochSize (SlotNo slot) point chainDb
+  | remainingSlotsInEpoch == 0 = do
+      putStrLn $ "--> writing ledger snapshot: " ++ show snapshotPath
+      extLedgerState <- fromMaybe (error $ "fail to get ledger state for point " <> show point) <$> atomically (ChainDB.getPastLedger chainDb point)
+      void $ writeExtLedgerState @_ @blk fs encoder snapshotPath extLedgerState
+  where
+    (epochNo, remainingSlotsInEpoch) = slot `divMod` epochSize
+    snapshotPath = mkFsPath ["ledger", "snapshot", show epochNo]
+    encoder = encodeDiskExtLedgerState codecConfig
+    fs = SomeHasFS $ ioHasFS @IO (MountPoint ".")
+snapshotState _ _ slot _ _ = do
+  putStrLn $ "--> skip slot " <> show slot
+  pure ()
 
 -- | Context required to forge a block
 data BlockContext blk = BlockContext
-  { bcBlockNo   :: !BlockNo
-  , bcPrevPoint :: !(Point blk)
+  { bcBlockNo :: !BlockNo,
+    bcPrevPoint :: !(Point blk)
   }
 
 -- | Create the 'BlockContext' from the header of the previous block
 blockContextFromPrevHeader ::
-     HasHeader (Header blk)
-  => Header blk
-  -> BlockContext blk
+  (HasHeader (Header blk)) =>
+  Header blk ->
+  BlockContext blk
 blockContextFromPrevHeader hdr =
-    BlockContext (succ (blockNo hdr)) (headerPoint hdr)
+  BlockContext (succ (blockNo hdr)) (headerPoint hdr)
 
 -- | Determine the 'BlockContext' for a block about to be forged from the
 -- current slot, ChainDB chain fragment, and ChainDB tip block number
 mkCurrentBlockContext ::
-     forall blk.
-     ( GetHeader blk
-     , BasicEnvelopeValidation blk )
-  => SlotNo
-  -> AnchoredFragment (Header blk)
-  -> Either () (BlockContext blk)
+  forall blk.
+  ( GetHeader blk,
+    BasicEnvelopeValidation blk
+  ) =>
+  SlotNo ->
+  AnchoredFragment (Header blk) ->
+  Either () (BlockContext blk)
 mkCurrentBlockContext currentSlot c = case c of
-    Empty AF.AnchorGenesis ->
-      Right $ BlockContext (expectedFirstBlockNo (Proxy @blk)) GenesisPoint
-
-    Empty (AF.Anchor anchorSlot anchorHash anchorBlockNo) ->
-      let p :: Point blk = BlockPoint anchorSlot anchorHash
-      in if anchorSlot < currentSlot
-           then Right $ BlockContext (succ anchorBlockNo) p
-           else Left ()
-
-    c' :> hdr -> case blockSlot hdr `compare` currentSlot of
-      LT -> Right $ blockContextFromPrevHeader hdr
-      GT -> Left ()
-      EQ -> Right $ if isJust (headerIsEBB hdr)
-        then blockContextFromPrevHeader hdr
-        else BlockContext (blockNo hdr) $ castPoint $ AF.headPoint c'
+  Empty AF.AnchorGenesis ->
+    Right $ BlockContext (expectedFirstBlockNo (Proxy @blk)) GenesisPoint
+  Empty (AF.Anchor anchorSlot anchorHash anchorBlockNo) ->
+    let p :: Point blk = BlockPoint anchorSlot anchorHash
+     in if anchorSlot < currentSlot
+          then Right $ BlockContext (succ anchorBlockNo) p
+          else Left ()
+  c' :> hdr -> case blockSlot hdr `compare` currentSlot of
+    LT -> Right $ blockContextFromPrevHeader hdr
+    GT -> Left ()
+    EQ ->
+      Right $
+        if isJust (headerIsEBB hdr)
+          then blockContextFromPrevHeader hdr
+          else BlockContext (blockNo hdr) $ castPoint $ AF.headPoint c'
