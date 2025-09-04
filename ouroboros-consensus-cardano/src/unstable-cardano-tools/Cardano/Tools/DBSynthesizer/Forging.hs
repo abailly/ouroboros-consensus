@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -12,23 +13,23 @@ where
 
 import           Cardano.Tools.DBSynthesizer.Types (ForgeLimit (..),
                      ForgeResult (..))
-import           Control.Monad (when)
+import           Control.Monad (when, void)
 import           Control.Monad.Except (runExcept)
 import           Control.Monad.IO.Class (liftIO)
 import           Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import           Control.Tracer as Trace (nullTracer)
 import           Data.Either (isRight)
-import           Data.Maybe (isJust)
+import           Data.Maybe (isJust, fromMaybe)
 import           Data.Proxy
 import           Data.Word (Word64)
 import           Ouroboros.Consensus.Block.Abstract as Block
 import           Ouroboros.Consensus.Block.Forging as Block (BlockForging (..),
                      ShouldForge (..), checkShouldForge)
-import           Ouroboros.Consensus.Config (TopLevelConfig, configConsensus,
+import           Ouroboros.Consensus.Config (TopLevelConfig, topLevelConfigCodec, configConsensus,
                      configLedger)
 import           Ouroboros.Consensus.Forecast (forecastFor)
 import           Ouroboros.Consensus.HeaderValidation
-                     (BasicEnvelopeValidation (..), HeaderState (..))
+                     (BasicEnvelopeValidation (..), AnnTip(..), HeaderState (..))
 import           Ouroboros.Consensus.Ledger.Abstract (Validated)
 import           Ouroboros.Consensus.Ledger.Basics
 import           Ouroboros.Consensus.Ledger.Extended
@@ -44,6 +45,21 @@ import qualified Ouroboros.Consensus.Storage.ChainDB.API.Types.InvalidBlockPunis
 import           Ouroboros.Consensus.Util.IOLike (atomically)
 import           Ouroboros.Network.AnchoredFragment as AF (Anchor (..),
                      AnchoredFragment, AnchoredSeq (..), headPoint)
+import Ouroboros.Consensus.Storage.LedgerDB
+import Ouroboros.Consensus.Storage.LedgerDB.Snapshots (takeSnapshot, snapshotToFileName)
+import Ouroboros.Consensus.Storage.Serialisation (EncodeDisk)
+import Ouroboros.Consensus.Util.IOLike (atomically)
+import Ouroboros.Network.AnchoredFragment as AF
+  ( Anchor (..),
+    AnchoredFragment,
+    AnchoredSeq (..),
+    headPoint,
+  )
+import Ouroboros.Network.Block ()
+import Ouroboros.Network.Protocol.LocalStateQuery.Type
+import System.FS.API (FsPath, HasFS (doesFileExist, removeFile), MountPoint (..), SomeHasFS (SomeHasFS), mkFsPath)
+import System.FS.IO (ioHasFS)
+import GHC.Stack(HasCallStack)
 
 data ForgeState
   = ForgeState
@@ -64,7 +80,7 @@ type GenTxs blk = SlotNo -> TickedLedgerState blk -> IO [Validated (GenTx blk)]
 
 runForge ::
      forall blk.
-    ( LedgerSupportsProtocol blk )
+    ( EncodeDisk blk (AnnTip blk), EncodeDisk blk (ChainDepState (BlockProtocol blk)), EncodeDisk blk (LedgerState blk),  LedgerSupportsProtocol blk )
     => EpochSize
     -> SlotNo
     -> ForgeLimit
@@ -126,79 +142,44 @@ runForge epochSize_ nextSlot opts chainDB blockForging cfg genTxs = do
           Nothing -> do
             exitEarly' "no ledger state"
 
-        ledgerView <-
-          case runExcept $ forecastFor
-                           (ledgerViewForecastAt
-                              (configLedger cfg)
-                              (ledgerState unticked))
-                           currentSlot of
-            Left err -> exitEarly' $ "no ledger view: " ++ show err
-            Right lv -> return lv
-
-        let tickedChainDepState :: Ticked (ChainDepState (BlockProtocol blk))
-            tickedChainDepState =
-                tickChainDepState
-                  (configConsensus cfg)
-                  ledgerView
-                  currentSlot
-                  (headerStateChainDep (headerState unticked))
-
-        -- Check if any forger is slot leader
-        let
-            checkShouldForge' f =
-              checkShouldForge f nullTracer cfg currentSlot tickedChainDepState
-
-        checks <- zip blockForging <$> liftIO (mapM checkShouldForge' blockForging)
-
-        (blockForging', proof) <- case [(f, p) | (f, ShouldForge p) <- checks] of
-          x:_ -> pure x
-          _   -> exitEarly' "NoLeader"
-
-        -- Tick the ledger state for the 'SlotNo' we're producing a block for
-        let tickedLedgerState :: Ticked (LedgerState blk)
-            tickedLedgerState =
-              applyChainTick
-                (configLedger cfg)
-                (ledgerState unticked)
-
-        -- Let the caller generate transactions
-        txs <- lift $ genTxs currentSlot tickedLedgerState
+      ledgerView <-
+        case runExcept $ forecastFor
+                         (ledgerViewForecastAt
+                            (configLedger cfg)
+                            (ledgerState unticked))
+                         currentSlot of
+          Left err -> exitEarly' $ "no ledger view: " ++ show err
+          Right lv -> return lv
 
       let tickedChainDepState :: Ticked (ChainDepState (BlockProtocol blk))
           tickedChainDepState =
-            tickChainDepState
-              (configConsensus cfg)
-              ledgerView
-              currentSlot
-              (headerStateChainDep (headerState unticked))
+              tickChainDepState
+                (configConsensus cfg)
+                ledgerView
+                currentSlot
+                (headerStateChainDep (headerState unticked))
 
       -- Check if any forger is slot leader
-      let checkShouldForge' f =
+      let
+          checkShouldForge' f =
             checkShouldForge f nullTracer cfg currentSlot tickedChainDepState
 
       checks <- zip blockForging <$> liftIO (mapM checkShouldForge' blockForging)
 
       (blockForging', proof) <- case [(f, p) | (f, ShouldForge p) <- checks] of
-        x : _ -> pure x
-        _ -> exitEarly' "NoLeader"
+        x:_ -> pure x
+        _   -> exitEarly' "NoLeader"
 
       -- Tick the ledger state for the 'SlotNo' we're producing a block for
-      let tickedLedgerState :: Ticked (LedgerState blk) DiffMK
+      let tickedLedgerState :: Ticked (LedgerState blk)
           tickedLedgerState =
             applyChainTick
-              OmitLedgerEvents
               (configLedger cfg)
               currentSlot
               (ledgerState unticked)
 
       -- Let the caller generate transactions
-      txs <- lift $ withRegistry $ \reg ->
-        genTxs
-          currentSlot
-          ( either (error "Impossible: we are forging on top of a block that the ChainDB cannot create forkers on!") id
-              <$> getReadOnlyForkerAtPoint chainDB reg (SpecificPoint bcPrevPoint)
-          )
-          tickedLedgerState
+      txs <- lift $ genTxs currentSlot tickedLedgerState
 
       -- Actually produce the block
       newBlock <-
@@ -236,12 +217,13 @@ getBlockContext currentSlot chainDB = do
 snapshotState ::
   forall blk.
   ( HasCallStack,
-    EncodeDisk blk (LedgerState blk EmptyMK),
+    EncodeDisk blk (LedgerState blk),
     EncodeDisk blk (ChainDepState (BlockProtocol blk)),
     EncodeDisk blk (AnnTip blk),
     GetHeader blk,
-    BasicEnvelopeValidation blk
-  ) =>
+    BasicEnvelopeValidation blk,
+    LedgerSupportsProtocol blk,
+    IsLedger (LedgerState blk)  ) =>
   CodecConfig blk ->
   Word64 ->
   SlotNo ->
@@ -249,22 +231,30 @@ snapshotState ::
   IO ()
 snapshotState codecConfig epochSize currentSlot@(SlotNo slot) chainDb
   | remainingSlotsInEpoch == 0 && epochNo > 0 = do
-      putStrLn $ "--> writing ledger snapshot: " ++ show snapshotPath
       BlockContext {bcPrevPoint = point} <- runExceptT (getBlockContext currentSlot chainDb) >>= either error pure
+      putStrLn $ "--> writing ledger snapshot at " ++ show point
       extLedgerState <- fromMaybe (error $ "fail to get ledger state for point " <> show point) <$> atomically (ChainDB.getPastLedger chainDb point)
-      cleanupSnapshot
-      void $ writeExtLedgerState @_ @blk (SomeHasFS fs) encoder snapshotPath extLedgerState
+      cleanupSnapshot point
+      takeSnapshot @_ @blk nullTracer (SomeHasFS fs) encoder extLedgerState >>= \case
+        Just (snapshot, _) -> putStrLn $ "--> written snapshot to " ++ show (snapshotToFileName snapshot)
+        Nothing -> putStrLn "--> No snapshot written"
   where
     (epochNo, remainingSlotsInEpoch) = slot `divMod` epochSize
-    snapshotPath = mkFsPath ["ledger.snapshot." <> show epochNo]
+    snapshotPath :: Point blk -> FsPath
+    snapshotPath point = mkFsPath ["ledger.snapshot." <> show epochNo <> "." <> display point]
     encoder = encodeDiskExtLedgerState codecConfig
     fs = ioHasFS @IO (MountPoint ".")
-    cleanupSnapshot = do
-      fileExists <- doesFileExist fs snapshotPath
+    cleanupSnapshot point = do
+      fileExists <- doesFileExist fs (snapshotPath point)
       when fileExists $ do
-        putStrLn $ "----> remove previous file " <> show snapshotPath
-        removeFile fs snapshotPath
+        putStrLn $ "----> remove previous file " <> show (snapshotPath point)
+        removeFile fs $ snapshotPath point
 snapshotState _ _ _ _ = pure ()
+
+display :: Show (HeaderHash blk) => Point blk -> String
+display (BlockPoint (SlotNo slot) hash) =
+  show slot <> "." <> show hash
+display GenesisPoint = "0." <> replicate 64 '0'
 
 -- | Context required to forge a block
 data BlockContext blk = BlockContext
