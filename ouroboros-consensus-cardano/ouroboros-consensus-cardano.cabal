@@ -206,83 +206,6 @@ library unstable-byronspec
     small-steps,
     transformers,
 
-library unstable-byron-testlib
-  import: common-lib
-  visibility: public
-  hs-source-dirs: src/unstable-byron-testlib
-  exposed-modules:
-    Ouroboros.Consensus.ByronDual.Ledger
-    Ouroboros.Consensus.ByronDual.Node
-    Ouroboros.Consensus.ByronDual.Node.Serialisation
-    Test.Consensus.Byron.Examples
-    Test.Consensus.Byron.Generators
-    Test.ThreadNet.Infra.Byron
-    Test.ThreadNet.Infra.Byron.Genesis
-    Test.ThreadNet.Infra.Byron.ProtocolInfo
-    Test.ThreadNet.Infra.Byron.TrackUpdates
-    Test.ThreadNet.TxGen.Byron
-
-  build-depends:
-    QuickCheck,
-    base,
-    byron-spec-ledger,
-    bytestring,
-    cardano-crypto-class,
-    cardano-crypto-test,
-    cardano-crypto-wrapper,
-    cardano-ledger-binary:{cardano-ledger-binary, testlib},
-    cardano-ledger-byron,
-    cardano-ledger-byron-test,
-    containers,
-    hedgehog-quickcheck,
-    mtl,
-    ouroboros-consensus:{ouroboros-consensus, unstable-consensus-testlib},
-    ouroboros-consensus-cardano,
-    ouroboros-consensus-diffusion:unstable-diffusion-testlib,
-    ouroboros-network-api,
-    serialise,
-    unstable-byronspec,
-
-test-suite byron-test
-  import: common-test
-  type: exitcode-stdio-1.0
-  hs-source-dirs: test/byron-test
-  main-is: Main.hs
-  other-modules:
-    Test.Consensus.Byron.Golden
-    Test.Consensus.Byron.Serialisation
-    Test.ThreadNet.Byron
-    Test.ThreadNet.DualByron
-
-  build-depends:
-    QuickCheck,
-    base,
-    binary-search,
-    byron-spec-chain,
-    byron-spec-ledger,
-    bytestring,
-    cardano-crypto-class,
-    cardano-crypto-wrapper,
-    cardano-ledger-binary,
-    cardano-ledger-byron,
-    cardano-ledger-byron-test,
-    cardano-slotting:testlib,
-    cborg,
-    constraints,
-    containers,
-    filepath,
-    hedgehog-quickcheck,
-    mtl,
-    ouroboros-consensus:{ouroboros-consensus, unstable-consensus-testlib},
-    ouroboros-consensus-cardano,
-    ouroboros-consensus-diffusion:unstable-diffusion-testlib,
-    ouroboros-network-mock,
-    small-steps:{small-steps, testlib},
-    tasty,
-    tasty-quickcheck,
-    unstable-byron-testlib,
-    unstable-byronspec,
-
 library unstable-shelley-testlib
   import: common-lib
   visibility: public
@@ -407,7 +330,6 @@ library unstable-cardano-testlib
     sop-core,
     sop-extras,
     strict-sop-core,
-    unstable-byron-testlib,
     unstable-shelley-testlib,
 
 test-suite cardano-test
@@ -464,7 +386,6 @@ test-suite cardano-test
     tasty-hunit,
     tasty-quickcheck,
     typed-protocols ^>=0.1.1,
-    unstable-byron-testlib,
     unstable-cardano-testlib,
     unstable-shelley-testlib,
 
